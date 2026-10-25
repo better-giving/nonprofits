@@ -48,16 +48,15 @@ function zipped(list: ListName, text: string): Uint8Array {
 }
 
 /**
- * One entry stored as a Deflate64 (method 9) zip. `compressed` replaces the
- * deflate block, so a caller can hand zip.js bytes it cannot inflate.
+ * One entry wrapped in a Deflate64 (method 9) zip header around `payload`, so a
+ * caller can hand the reader method-9 bytes it cannot inflate.
  */
 function deflate64Zip(
   name: string,
   text: string,
-  compressed?: Uint8Array,
+  payload: Uint8Array,
 ): Uint8Array {
   const data = Buffer.from(text);
-  const payload = compressed ?? storedDeflate(data);
   const nameBytes = Buffer.from(name);
   const crc = crc32(data);
   const local = Buffer.concat([
@@ -108,15 +107,6 @@ function deflate64Zip(
   return Buffer.concat([local, central, end]);
 }
 
-function storedDeflate(data: Uint8Array): Buffer {
-  const block = Buffer.alloc(5 + data.length);
-  block[0] = 1;
-  block.writeUInt16LE(data.length, 1);
-  block.writeUInt16LE(~data.length & 0xffff, 3);
-  block.set(data, 5);
-  return block;
-}
-
 function le(value: number, bytes: number): Buffer {
   const out = Buffer.alloc(bytes);
   out.writeUIntLE(value, 0, bytes);
@@ -162,10 +152,10 @@ beforeAll(async () => {
   }
   const pub78Text = await fixtureText("pub78");
   const pub78 = zipped("pub78", pub78Text);
-  routes.set(
-    "/deflate64/pub78.zip",
-    deflate64Zip("data-download-pub78.txt", pub78Text),
-  );
+  routes.set("/deflate64/pub78.zip", {
+    body: await readFile(new URL("pub78-deflate64.zip", LIST_FIXTURES)),
+    lastModified: RELEASED,
+  });
   routes.set(
     "/deflate64-bad/pub78.zip",
     deflate64Zip(
@@ -729,12 +719,15 @@ test("a later release keeping only an EIN's older revocation takes that one and 
   ]);
 });
 
-test("a Deflate64 list zip loads", { timeout: 60_000 }, async () => {
+test("a real Deflate64 list zip loads", { timeout: 60_000 }, async () => {
   const dir = await freshDataDir("deflate64");
+  // fixtures/lists/pub78-deflate64.zip: a genuine method-9 archive (see its
+  // README); the import inflates it through its Deflate64 branch
+  const deflate64Rows = 7;
   const summary = await loadList(dir, "pub78", {
     path: "/deflate64/pub78.zip",
   });
-  expect(summary.rows).toBe(FIXTURE_ROWS.pub78);
+  expect(summary.rows).toBe(deflate64Rows);
   expect(await query(dir, orgWithSources("000587764"))).toStrictEqual([
     {
       name: "Iglesia Bethesda Inc.",
@@ -742,6 +735,19 @@ test("a Deflate64 list zip loads", { timeout: 60_000 }, async () => {
       street: null,
       city: "Lowell",
       state: "MA",
+      zip: null,
+      address_source: "pub78",
+      bmf_run_id: null,
+      in_pub78: 1,
+    },
+  ]);
+  expect(await query(dir, orgWithSources("530196605"))).toStrictEqual([
+    {
+      name: "American National Red Cross",
+      name_source: "pub78",
+      street: null,
+      city: "Washington",
+      state: "DC",
       zip: null,
       address_source: "pub78",
       bmf_run_id: null,
