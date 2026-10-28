@@ -218,15 +218,38 @@ describe("renderSummary's warm-up", () => {
           seconds: 1,
           summary: "warm-up: 2 queries in 1.0 s, 40 not started",
           warnings: [
-            "WARNING: warm-up stopped after 2 of 42 queries: budget 600 s spent",
+            "WARNING: warm-up stopped after 2 of 42 queries: budget 600 s spent, switching anyway",
           ],
         },
       }),
     );
 
     expect(md).toContain(
-      "### Warm-up\n\nwarm-up: 2 queries in 1.0 s, 40 not started\n\n- WARNING: warm-up stopped after 2 of 42 queries: budget 600 s spent\n",
+      "### Warm-up\n\nwarm-up: 2 queries in 1.0 s, 40 not started\n\n- WARNING: warm-up stopped after 2 of 42 queries: budget 600 s spent, switching anyway\n",
     );
+  });
+
+  test("redacts a secret quoted in the warm-up's summary or warnings", () => {
+    const md = renderSummary(
+      record({
+        warmup: {
+          queries: [],
+          skipped: 0,
+          seconds: 0,
+          summary:
+            "WARNING: warm-up failed, switching anyway: token 0123abcd rejected",
+          warnings: [
+            "WARNING: warm-up failed, switching anyway: token 0123abcd rejected",
+          ],
+        },
+      }),
+      ["0123abcd"],
+    );
+
+    expect(md).toContain(
+      "### Warm-up\n\nWARNING: warm-up failed, switching anyway: token [redacted] rejected\n\n- WARNING: warm-up failed, switching anyway: token [redacted] rejected\n",
+    );
+    expect(md).not.toContain("0123abcd");
   });
 
   test("a run that did not warm has no warm-up section", () => {

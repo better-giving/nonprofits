@@ -13,6 +13,7 @@ export {
   FILING_SIZE_INDEX,
   FILING_SIZE_INDEX_DDL,
   type ImportSource,
+  ORGS_KEY_INDEX,
 } from "./schema.ts";
 export { matchExpression, searchSql } from "./search-sql.ts";
 export {

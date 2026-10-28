@@ -20,8 +20,9 @@ const MAX_CANDIDATES = 1_000;
  * window, and revenue sits after mission and activity_summary, so the primary
  * key would read both texts per candidate and time out on Turso. INDEXED BY
  * the covering size index reads only the figures; without it the unanalyzed
- * planner picks the primary key even when the index exists. A database built
- * before the index still answers through the primary key.
+ * planner picks the primary key even when the index exists. On a database
+ * built before the index, `searchSql(true)` fails with `no such index`; the
+ * caller then runs `searchSql(false)`, which answers through the primary key.
  */
 export function searchSql(indexed: boolean): string {
   const filings = indexed

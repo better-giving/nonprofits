@@ -207,7 +207,35 @@ describe("run refresh", { timeout: 60_000 }, () => {
       `${after.database?.name}.db`,
     ]);
     expect(existsSync(h.deps.dataFile)).toBe(true);
-    expect(await readFile(h.summary, "utf8")).toContain("### Warm-up\n");
+    expect(await readFile(h.summary, "utf8")).toMatch(
+      /^### Warm-up\n\nwarm-up: 42 queries in \d+\.\d s\n/m,
+    );
+  });
+
+  test("a switch that fails after warm-up still reports the warm-up in the summary", async () => {
+    const h = await harness({
+      // the switch is the app database's one batch: it fails before committing
+      wrapApp: (app) =>
+        new Proxy(app, {
+          get(target, key) {
+            if (key === "batch") {
+              return () => Promise.reject(new Error("connection reset"));
+            }
+            const value = Reflect.get(target, key, target);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        }),
+    });
+    const before = await h.served();
+    quiet();
+
+    const code = await run(["refresh", "--summary", h.summary], {}, h.deps);
+
+    expect(code).toBe(1);
+    expect(await h.served()).toStrictEqual(before);
+    const md = await readFile(h.summary, "utf8");
+    expect(md).toMatch(/^\*\*Failed:\*\* .*connection reset/m);
+    expect(md).toMatch(/^### Warm-up\n\nwarm-up: 42 queries in \d+\.\d s\n/m);
   });
 });
 

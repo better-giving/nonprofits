@@ -29,7 +29,7 @@ How to run the API, mint a local key, or build a month of IRS data: [CONTRIBUTIN
 | Package | Owns | May import |
 | --- | --- | --- |
 | `@nonprofits/core` | EIN, lookup, search, result types | Nothing in the workspace. No runtime dependencies. |
-| `@nonprofits/db` | Schema, app migrations, served-database pointer, search index, fixtures | `@libsql/client` only |
+| `@nonprofits/db` | Schema, app migrations, served-database pointer, search index and search query, fixtures | `@libsql/client` only |
 | `@nonprofits/api` | Hono app on Vercel: `/v1`, `/mcp`, admin key routes, daily cron | `core`, `db` |
 | `@nonprofits/import` | Monthly IRS bulk-file job and `.github/workflows/import.yml` | `db` |
 | `@nonprofits/cli` | API-key admin. Talks to the api over HTTP | In tests only, `@nonprofits/api/test-support` |

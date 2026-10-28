@@ -1,5 +1,10 @@
 import type { Client, InArgs } from "@libsql/client";
-import { FILING_SIZE_INDEX, matchExpression, searchSql } from "@nonprofits/db";
+import {
+  FILING_SIZE_INDEX,
+  matchExpression,
+  ORGS_KEY_INDEX,
+  searchSql,
+} from "@nonprofits/db";
 import { errorMessage } from "./error-message.ts";
 
 /** How long warm-up may run before the pointer switches anyway. */
@@ -23,8 +28,8 @@ export const WARMUP_TERMS = [
   "catholic charities",
   "foundation",
   "food bank",
-  "boys girls club",
-  "habitat humanity",
+  "boys and girls club",
+  "habitat for humanity",
   "ymca",
   "school",
   "hospital",
@@ -64,9 +69,7 @@ export const WARMUP_TERMS = [
  */
 const FILINGS_SIZE_SQL = `SELECT total_revenue FROM filings INDEXED BY ${FILING_SIZE_INDEX} LIMIT 1`;
 
-/** SQLite's automatic index on `orgs.ein`, the primary key. */
-const ORGS_KEY_SQL =
-  "SELECT ein FROM orgs INDEXED BY sqlite_autoindex_orgs_1 LIMIT 1";
+const ORGS_KEY_SQL = `SELECT ein FROM orgs INDEXED BY ${ORGS_KEY_INDEX} LIMIT 1`;
 
 export interface WarmupQuery {
   label: string;
@@ -82,7 +85,7 @@ export interface WarmupReport {
   seconds: number;
   /** The summary line, also logged. */
   summary: string;
-  /** Warning lines, empty when every started query finished. */
+  /** Warning lines: one per query that failed or timed out, and one when the budget left queries unstarted. */
   warnings: string[];
 }
 
@@ -101,11 +104,7 @@ interface Query {
   args: InArgs;
 }
 
-/**
- * The search SQL the api runs, then one row through each index. Each read
- * opens the index and walks it for one row, then stops, unlike the counts
- * they replaced. A missing index warns.
- */
+/** The search SQL the api runs, then one row through each index. */
 function queries(): Query[] {
   const searches = WARMUP_TERMS.map((term) => ({
     label: term,
@@ -114,18 +113,18 @@ function queries(): Query[] {
   }));
   return [
     ...searches,
-    { label: "filings_size", sql: FILINGS_SIZE_SQL, args: [] },
-    { label: "orgs key", sql: ORGS_KEY_SQL, args: [] },
+    { label: "filings_size index", sql: FILINGS_SIZE_SQL, args: [] },
+    { label: "orgs key index", sql: ORGS_KEY_SQL, args: [] },
   ];
 }
 
 /**
  * Runs the searches, then one row through each index, on a database that is
- * not served yet. Each read opens the index and walks it for one row, then
- * stops, unlike the counts they replaced. A missing index warns. A query
- * that fails or runs out its own time is a warning. Once `budgetMs` is spent,
- * the rest are not started. Rejects only when `signal` aborts, which is a
- * stop, not a warning.
+ * not served yet. Each index read opens the index and walks it for one row,
+ * then stops. A missing index warns. A query that fails or outlasts
+ * `queryTimeoutMs` is a warning, and none runs past the end of `budgetMs`;
+ * once it is spent, the rest are not started. Rejects only when `signal`
+ * aborts, which is a stop, not a warning, with `WarmupStopped`.
  */
 export async function warmUploadedDatabase(
   options: WarmupOptions,
@@ -142,21 +141,37 @@ export async function warmUploadedDatabase(
   const started = now();
   const ran: WarmupQuery[] = [];
   const warnings: string[] = [];
+  /** The report on the queries that ran, logged; `stopped` when a stop cut them short. */
+  const finish = (stopped: boolean): WarmupReport => {
+    const skipped = plan.length - ran.length;
+    if (skipped > 0 && !stopped) {
+      const warning = `WARNING: warm-up stopped after ${ran.length} of ${plan.length} queries: budget ${(budgetMs / 1000).toFixed(0)} s spent, switching anyway`;
+      warnings.push(warning);
+      log(warning);
+    }
+    const seconds = (now() - started) / 1000;
+    const summary = summaryLine(ran.length, seconds, skipped, stopped);
+    log(summary);
+    return { queries: ran, skipped, seconds, summary, warnings };
+  };
+  const stop = (signal: AbortSignal) =>
+    new WarmupStopped(abortError(signal), finish(true));
   for (const query of plan) {
-    if (signal?.aborted) throw abortError(signal);
-    if (now() - started >= budgetMs) break;
+    if (signal?.aborted) throw stop(signal);
+    const left = budgetMs - (now() - started);
+    if (left <= 0) break;
     const at = now();
     try {
       await runBounded(
         () => db.execute({ sql: query.sql, args: query.args }),
-        queryTimeoutMs,
+        Math.min(queryTimeoutMs, left),
         signal,
       );
       const seconds = (now() - at) / 1000;
       ran.push({ label: query.label, ok: true, seconds });
       log(`warmed "${query.label}" (${seconds.toFixed(1)} s)`);
     } catch (error) {
-      if (signal?.aborted) throw abortError(signal);
+      if (signal?.aborted) throw stop(signal);
       const seconds = (now() - at) / 1000;
       const warning = `WARNING: warm-up "${query.label}" failed after ${seconds.toFixed(1)} s: ${errorMessage(error)}`;
       ran.push({ label: query.label, ok: false, seconds, warning });
@@ -164,22 +179,29 @@ export async function warmUploadedDatabase(
       log(warning);
     }
   }
-  const skipped = plan.length - ran.length;
-  if (skipped > 0) {
-    const warning = `WARNING: warm-up stopped after ${ran.length} of ${plan.length} queries: budget ${(budgetMs / 1000).toFixed(0)} s spent`;
-    warnings.push(warning);
-    log(warning);
-  }
-  const seconds = (now() - started) / 1000;
-  const summary = summaryLine(ran.length, seconds, skipped);
-  log(summary);
-  return { queries: ran, skipped, seconds, summary, warnings };
+  return finish(false);
 }
 
-function summaryLine(ran: number, seconds: number, skipped: number): string {
+function summaryLine(
+  ran: number,
+  seconds: number,
+  skipped: number,
+  stopped: boolean,
+): string {
   const queries = ran === 1 ? "1 query" : `${ran} queries`;
   const line = `warm-up: ${queries} in ${seconds.toFixed(1)} s`;
+  if (stopped) return `${line}, then stopped with ${skipped} not run`;
   return skipped === 0 ? line : `${line}, ${skipped} not started`;
+}
+
+/** A stop during warm-up: the stop's reason as its message, and the report on the queries that ran before it. */
+export class WarmupStopped extends Error {
+  readonly report: WarmupReport;
+  constructor(reason: Error, report: WarmupReport) {
+    super(reason.message);
+    this.name = "WarmupStopped";
+    this.report = report;
+  }
 }
 
 function abortError(signal: AbortSignal): Error {
