@@ -8,9 +8,13 @@ import {
   BlobReader,
   ERR_BAD_FORMAT,
   ERR_CENTRAL_DIRECTORY_NOT_FOUND,
+  ERR_ENCRYPTED,
+  ERR_ENCRYPTED_CENTRAL_DIRECTORY,
   ERR_EOCDR_LOCATOR_ZIP64_NOT_FOUND,
   ERR_EOCDR_NOT_FOUND,
   ERR_LOCAL_FILE_HEADER_NOT_FOUND,
+  ERR_UNSUPPORTED_COMPRESSION,
+  ERR_UNSUPPORTED_ENCRYPTION,
   ZipReader,
 } from "@zip.js/zip.js";
 import { Unzip, UnzipInflate } from "fflate";
@@ -29,9 +33,19 @@ const INCOMPLETE_ZIP = new Set([
   ERR_LOCAL_FILE_HEADER_NOT_FOUND,
 ]);
 
+/** A zip.js failure that means the entry is packed in a way it cannot read. */
+const UNREADABLE_ENTRY = new Set([
+  ERR_UNSUPPORTED_COMPRESSION,
+  ERR_UNSUPPORTED_ENCRYPTION,
+  ERR_ENCRYPTED,
+  ERR_ENCRYPTED_CENTRAL_DIRECTORY,
+]);
+
 /**
- * The archive uses a compression method the streaming reader does not inflate.
- * A list load reports it as layout drift, rather than a failed download.
+ * A zip entry this reader cannot inflate: a compression method fflate lacks,
+ * or a Deflate64 entry zip.js cannot read because of its compression or
+ * encryption. `records` reports it as the file's layout changing, not as a
+ * failed download.
  */
 export class LayoutDriftError extends Error {
   constructor(message: string, options?: ErrorOptions) {
@@ -47,12 +61,12 @@ export class LayoutDriftError extends Error {
  * that file ends, which also ends the download of the rest. A body that isn't
  * a zip, or ends before that file does, throws.
  *
- * A Deflate64 entry is written out and read through `zipEntries`, which
- * inflates it. The whole archive is read first, because that reader finds the
- * entry from the central directory. Any other method fflate cannot inflate
- * throws `LayoutDriftError`: fflate reports the method and then throws a
- * TypeError from the decoder it does not have, which would otherwise read as
- * a broken download.
+ * A Deflate64 entry is written to a temp file and read through `zipEntries`,
+ * which finds it from the central directory, so the whole archive downloads
+ * first; an entry zip.js cannot read for its compression or encryption throws
+ * `LayoutDriftError`. Any other method fflate cannot inflate throws
+ * `LayoutDriftError` naming it, rather than a TypeError that would read as a
+ * broken download.
  */
 export async function* firstZipEntry(
   archive: AsyncIterable<Uint8Array>,
@@ -148,8 +162,8 @@ function compressionMethod(chunks: readonly Uint8Array[]): number | undefined {
 }
 
 /**
- * A Deflate64 archive, inflated by `zipEntries`. The file is removed once the
- * first entry has been read, or the read has failed.
+ * The first entry of a Deflate64 archive, written to a temp file for
+ * `zipEntries` to inflate. The temp file is removed however the read ends.
  */
 async function* deflate64Entry(
   archive: AsyncIterable<Uint8Array>,
@@ -169,11 +183,13 @@ async function* deflate64Entry(
       if (!read && incompleteZip(error)) {
         throw new Error("zip archive holds no complete file", { cause: error });
       }
-      const detail =
-        error instanceof Error && error.message !== ""
-          ? `: ${error.message}`
-          : "";
-      throw new LayoutDriftError(`zip uses Deflate64 compression${detail}`, {
+      if (unreadableEntry(error)) {
+        throw new LayoutDriftError(
+          `zip's Deflate64 entry did not inflate: ${error.message}`,
+          { cause: error },
+        );
+      }
+      throw new Error("zip's Deflate64 entry did not inflate", {
         cause: error,
       });
     }
@@ -187,17 +203,27 @@ function incompleteZip(error: unknown): boolean {
   return error instanceof Error && INCOMPLETE_ZIP.has(error.message);
 }
 
+function unreadableEntry(error: unknown): error is Error {
+  return error instanceof Error && UNREADABLE_ENTRY.has(error.message);
+}
+
 async function* entryBytes(
   stream: ReadableStream<Uint8Array>,
 ): AsyncGenerator<Uint8Array> {
   const reader = stream.getReader();
+  let done = false;
   try {
     while (true) {
       const next = await reader.read();
-      if (next.done) return;
+      if (next.done) {
+        done = true;
+        return;
+      }
       yield next.value;
     }
   } finally {
+    // a caller that stops early would leave zip.js blocked writing the rest
+    if (!done) await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
 }
@@ -221,8 +247,8 @@ async function* inflateFirst(
   });
   unzip.register(UnzipInflate);
 
-  // an unknown method is handed to ondata and then thrown past: fflate still
-  // constructs the decoder it does not have
+  // fflate hands an unknown method's error to ondata, then throws a TypeError
+  // building the decoder it lacks: raise the ondata error, not the TypeError
   const raiseFailure = () => {
     const drift = compressionDrift(failure);
     if (drift) throw drift;
@@ -256,9 +282,7 @@ function compressionDrift(error: unknown): LayoutDriftError | undefined {
   if (!(error instanceof Error)) return undefined;
   const method = UNKNOWN_COMPRESSION.exec(error.message)?.[1];
   if (method === undefined) return undefined;
-  const named =
-    method === String(DEFLATE64)
-      ? "Deflate64 compression"
-      : `compression method ${method}`;
-  return new LayoutDriftError(`zip uses ${named}`, { cause: error });
+  return new LayoutDriftError(`zip uses compression method ${method}`, {
+    cause: error,
+  });
 }
