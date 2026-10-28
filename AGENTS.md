@@ -34,13 +34,13 @@ How to run the API, mint a local key, or build a month of IRS data: [CONTRIBUTIN
 | `@nonprofits/import` | Monthly IRS bulk-file job and `.github/workflows/import.yml` | `db` |
 | `@nonprofits/cli` | API-key admin. Talks to the api over HTTP | In tests only, `@nonprofits/api/test-support` |
 
-A workspace package missing from a package's `dependencies` and `devDependencies` does not resolve there, so `pnpm typecheck` enforces the import column, except `cli`'s "in tests only": `@nonprofits/api` is a `cli` devDependency, so `cli`'s `src` could import it too. Nothing checks that `core` stays free of I/O, SQL, and framework code.
+`pnpm typecheck` enforces the "May import" column: a workspace package missing from a package's `dependencies` and `devDependencies` does not resolve there. `cli`'s "in tests only" is the exception: `@nonprofits/api` is a `cli` devDependency, so nothing stops `cli`'s `src` importing it. Nothing checks that `core` stays free of I/O, SQL, and framework code.
 
-A new variable the api reads goes in `PRODUCTION_ENV` (`packages/api/src/production.ts`) and in `packages/api/.env.example`, a `required` or `secret` one as a `replace-with-` placeholder and an `optional` one empty; `packages/api/src/deploy.test.ts` fails when the two lists differ. A test runs only if its path matches `packages/*/{src,test}/**/*.test.ts` (`vitest.config.ts`).
+A new variable the api reads goes in `PRODUCTION_ENV` (`packages/api/src/production.ts`) and in `packages/api/.env.example`, a `required` or `secret` one as a `replace-with-` placeholder and an `optional` one empty; `packages/api/src/deploy.test.ts` fails when the two lists differ or when the example sets a `required` or `secret` variable to a value that would serve. A test runs only if its path matches `packages/*/{src,test}/**/*.test.ts` (`vitest.config.ts`).
 
 ## Conventions
 
-- Relative imports end in `.ts`, not `.js`; the compiler accepts both, so nothing else holds this.
+- Relative imports end in `.ts`, not `.js`; the compiler accepts both, and nothing checks which.
 - Committed placeholders start with `replace-with-`, and `isSecretSet` treats a placeholder, a string under 32 characters, or an unset variable as unset.
 
 ## Never
@@ -50,5 +50,5 @@ A new variable the api reads goes in `PRODUCTION_ENV` (`packages/api/src/product
 - Never weaken a test so a change goes green: do not skip it, delete it, loosen the expected value, stub out the behavior it guards, or raise a timeout to hide a failure. Fix the code the test is about.
 - Never point tests, fixtures, or the agent install at production Turso, Vercel, or GitHub credentials.
 - Never let a test reach the network. `testApi()`'s default `fetch` rejects every call; nothing stops a direct `fetch` elsewhere.
-- Never store or log an API key in plaintext.
+- Never store an API key in plaintext.
 - Never install without `--frozen-lockfile` in CI or in `.cursor/environment.json`, and never hand-edit `pnpm-lock.yaml`.
