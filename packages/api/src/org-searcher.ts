@@ -37,8 +37,8 @@ function lacksSizeIndex(error: unknown): boolean {
 /**
  * Every BMF run, since each region file is its own run and a match cites the
  * one listing it, plus the latest Pub 78 run, which `in_pub78` is as of, and
- * the latest revocation run, which the revocation dates are as of: a data
- * database is built fresh each month, so a handful of rows.
+ * the latest revocation run, which the revocation dates are as of. A data
+ * database is built fresh each month, so this is a handful of rows.
  */
 const SOURCE_RUNS_SQL = `
 SELECT id, source, file_url AS file, released_at, fetched_at

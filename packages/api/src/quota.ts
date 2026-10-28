@@ -44,8 +44,8 @@ export function limitsOf(
 export const ROWS_WRITTEN = { metered: 2, whitelisted: 1, refused: 0 };
 
 // Default service-wide daily ceilings, sized so traffic at both stays inside
-// Turso's free plan: 500M rows read and 10M rows written a month, spread
-// over a 31-day month (DAILY_ROWS_READ for reads).
+// Turso's free plan: 500M rows read and 10M rows written a month.
+// DAILY_ROWS_READ is the reads spread over a 31-day month.
 //
 // Reads bind. A search ranks up to SEARCH_MAX_CANDIDATES FTS matches,
 // visiting per match 3 rows: its FTS entry, its `orgs` row and

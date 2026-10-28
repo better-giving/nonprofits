@@ -36,7 +36,7 @@ One organization. `ein` is 9 digits, with or without the dash (`53-0196605`).
 | `deductible` | `true`: listed in IRS Publication 78. `false`: Publication 78 is imported and the org is not listed. `null`: unknown, for example when Publication 78 has not been imported. Read from Publication 78 alone, so a revoked org can still be `true`: check `revoked` |
 | `revoked`, `revocationDate`, `reinstatementDate` | `revoked` is whether the exemption is revoked and not reinstated since (`null` until the auto-revocation list is imported). An org revoked and later reinstated (on the revocation list, or recognized again in the Business Master File) has `revoked` false and still returns its `revocationDate`. Dates are `YYYY-MM-DD` |
 | `mission`, `activitySummary` | From its latest e-filed Form 990 or 990-EZ |
-| `website` | The raw value from its latest e-filed return, else from its 990-N e-Postcard, which also wins when only it is a web address |
+| `website` | The raw value from its latest e-filed return, or from its 990-N e-Postcard when the return has none or only the e-Postcard's is a web address |
 | `websiteUrl` | `website` as an `https` URL, or `null` when there is no website or it is not a web address |
 | `programs` | Up to 3 program services, highest expense first |
 | `finances` | `revenue`, `expenses`, `assets` (end of year) and `taxYear`, from its latest e-filed return |
