@@ -330,7 +330,7 @@ const HOST_LABEL = /^(?!-)[a-z0-9-]{1,63}(?<!-)$/i;
 
 /**
  * The 990's website wins over the e-Postcard's, unless only the e-Postcard's
- * is a web address. With neither one, the 990's stands, as raw.
+ * is a web address. When neither is, the 990's still wins, raw.
  */
 function pickWebsite(
   record: OrgRecord,

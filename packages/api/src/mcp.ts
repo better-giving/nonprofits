@@ -30,6 +30,7 @@ import { refusalBody, refuse } from "./refusal.ts";
 /** Far above any tool call's arguments (a query is at most 200 characters). */
 const MAX_BODY_BYTES = 16 * 1024;
 
+/** Shared by the lookup and search tool descriptions and their output schemas. */
 const DEDUCTIBLE_TRISTATE =
   "True when the organization is listed in IRS Publication 78, false when Publication 78 has been imported and the organization is not listed, and null when unknown (for example, Publication 78 has not been imported). It is read from Publication 78 alone, so a revoked organization can still be true; check `revoked`.";
 
