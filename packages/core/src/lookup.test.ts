@@ -526,13 +526,17 @@ describe("lookupOrg", () => {
     ["www.daretoloveministries.org", "https://www.daretoloveministries.org"],
     ["http://granburywinewalk.com/", "https://granburywinewalk.com"],
     ["AbortionAccessFund.Org", "https://abortionaccessfund.org"],
-    ["HTTPS://WWW.CVESD.ORG/SCHOOLS", "https://www.cvesd.org/schools"],
+    ["HTTPS://WWW.CVESD.ORG/SCHOOLS", "https://www.cvesd.org/SCHOOLS"],
     [
       "https://www.flipcause.com/secure/cause_pdetai",
       "https://www.flipcause.com/secure/cause_pdetai",
     ],
-    ["http://EXAMPLE.org/Path/", "https://example.org/path/"],
-    ["HTTP://EXAMPLE.ORG/Path", "https://example.org/path"],
+    ["http://EXAMPLE.org/Path/", "https://example.org/Path/"],
+    ["HTTP://EXAMPLE.ORG/Path", "https://example.org/Path"],
+    [
+      "sites.google.com/view/HopeHouse?Tab=About",
+      "https://sites.google.com/view/HopeHouse?Tab=About",
+    ],
     ["http://example.org:80/path", "https://example.org/path"],
     ["http://example.org:8080/path", "https://example.org:8080/path"],
     ["https://example.org:80/path", "https://example.org:80/path"],
@@ -540,12 +544,14 @@ describe("lookupOrg", () => {
     ["NONE", null],
     ["0", null],
     ["   ", null],
+    ["  www.redcross.org  ", "https://www.redcross.org"],
+    ["www.red cross.org", null],
     ["not a url", null],
     ["user@example.org", null],
     ["https://user:secret@example.org", null],
-    ["https://www.youtube.com/@Channel", "https://www.youtube.com/@channel"],
+    ["https://www.youtube.com/@Channel", "https://www.youtube.com/@Channel"],
     ["https://www.tiktok.com/@org", "https://www.tiktok.com/@org"],
-    ["http://www.youtube.com/@Channel/", "https://www.youtube.com/@channel/"],
+    ["http://www.youtube.com/@Channel/", "https://www.youtube.com/@Channel/"],
     ["https://example.org/search?q=@org", "https://example.org/search?q=@org"],
     ["https://example.org/page#@org", "https://example.org/page#@org"],
     ["example", null],
@@ -554,6 +560,18 @@ describe("lookupOrg", () => {
     ["https://.com", null],
     ["foo..com", null],
     [".example.com", null],
+    ["www.example.org.", "https://www.example.org"],
+    ["https://www.example.org./about", "https://www.example.org/about"],
+    ["www.example.org..", null],
+    ["www.x.org,www.y.org", null],
+    ["x.org;y.org", null],
+    ["*.x.org", null],
+    ["www_x.org", null],
+    ["-x.org", null],
+    ["x-.org", null],
+    [`${"a".repeat(64)}.org`, null],
+    [`${"a".repeat(63)}.org`, `https://${"a".repeat(63)}.org`],
+    ["my-org.org", "https://my-org.org"],
   ] as const)(
     "keeps the raw website %j and sets websiteUrl to %j",
     async (raw, websiteUrl) => {
@@ -602,6 +620,50 @@ describe("lookupOrg", () => {
     });
     expect(org.website).toBe("https://www.redcross.org");
     expect(org.provenance.website).toStrictEqual(RED_CROSS_990);
+  });
+
+  test("falls back to the e-Postcard website when the 990's is not a web address, citing the e-Postcard", async () => {
+    const org = await lookup({
+      ...redCross(),
+      efile: { filing: { ...redCrossFiling(), website: "N/A" } },
+      epostcard: {
+        filer: true,
+        website: "www.redcross.org",
+        source: EPOSTCARD,
+      },
+    });
+    expect({
+      website: org.website,
+      websiteUrl: org.websiteUrl,
+      websiteSource: org.provenance.website,
+      websiteUrlSource: org.provenance.websiteUrl,
+      notes: org.notes,
+    }).toStrictEqual({
+      website: "www.redcross.org",
+      websiteUrl: "https://www.redcross.org",
+      websiteSource: EPOSTCARD,
+      websiteUrlSource: EPOSTCARD,
+      notes: [],
+    });
+  });
+
+  test("keeps the 990's raw website when neither it nor the e-Postcard's is a web address", async () => {
+    const org = await lookup({
+      ...redCross(),
+      efile: { filing: { ...redCrossFiling(), website: "N/A" } },
+      epostcard: { filer: true, website: "NONE", source: EPOSTCARD },
+    });
+    expect({
+      website: org.website,
+      websiteUrl: org.websiteUrl,
+      websiteSource: org.provenance.website,
+      notes: org.notes,
+    }).toStrictEqual({
+      website: "N/A",
+      websiteUrl: null,
+      websiteSource: RED_CROSS_990,
+      notes: ["website is not a valid web address"],
+    });
   });
 
   test("notes that filings are not yet imported instead of guessing none", async () => {
@@ -726,8 +788,17 @@ describe("lookupOrg", () => {
     ["03", "private_operating_foundation"],
     ["04", "private_foundation"],
     ["10", "public_charity"],
+    ["11", "public_charity"],
+    ["12", "public_charity"],
+    ["13", "public_charity"],
+    ["14", "public_charity"],
+    ["15", "public_charity"],
+    ["16", "public_charity"],
+    ["17", "public_charity"],
     ["18", "public_charity"],
     ["21", "public_charity"],
+    ["22", "public_charity"],
+    ["23", "public_charity"],
     ["24", "public_charity"],
   ] as const)(
     "maps foundation code %s to %s and cites the BMF for both",
@@ -750,7 +821,7 @@ describe("lookupOrg", () => {
   );
 
   test.each([
-    ["00", "not a 501(c)(3): no foundation status"],
+    ["00", "foundation code 00: no foundation status"],
     ["09", "foundation status is in suspense"],
     ["19", "unrecognized foundation code"],
     ["20", "unrecognized foundation code"],

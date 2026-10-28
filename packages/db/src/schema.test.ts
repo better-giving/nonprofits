@@ -27,8 +27,8 @@ async function outcome(db: Client, sql: string): Promise<string> {
   }
 }
 
-describe("COLUMNS", () => {
-  test("indexes filing revenue and assets ahead of the mission text", async () => {
+describe("FILING_SIZE_INDEX", () => {
+  test("indexes filing revenue and assets by EIN, without the mission text", async () => {
     const db = await dataDatabase();
     const rs = await db.execute("PRAGMA index_info(filings_size)");
 
@@ -38,7 +38,9 @@ describe("COLUMNS", () => {
       "total_assets_eoy",
     ]);
   });
+});
 
+describe("COLUMNS", () => {
   test("lists every column of every loaded table a data database builds, in order", async () => {
     const db = await dataDatabase();
     for (const [table, columns] of Object.entries(COLUMNS)) {

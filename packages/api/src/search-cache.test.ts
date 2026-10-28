@@ -4,7 +4,8 @@ import { switchServedDatabase } from "@nonprofits/db";
 import { dataDbFixture, type LocalDb } from "@nonprofits/db/fixture";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { POINTER_TTL_MS } from "./data-db.ts";
-import { vercelSearchCache } from "./search-cache.ts";
+import { SEARCH_RECORD_VERSION } from "./org-searcher.ts";
+import { memorySearchCache, vercelSearchCache } from "./search-cache.ts";
 import {
   freshClient,
   insertKey,
@@ -142,6 +143,58 @@ describe("a repeated search", () => {
     expect(searchesRun).toBe(2);
     expect((await fewer.json()) as OrgSearchResponse).toMatchObject({
       limit: 1,
+      results: [{ ein: "530196605" }],
+    });
+  });
+});
+
+describe("a search cached by the release before revocation in search", () => {
+  /** The record that release wrote: no `revocation`. */
+  const staleRecords = [
+    {
+      ein: "530196605",
+      name: "AMERICAN NATIONAL RED CROSS",
+      city: "WASHINGTON",
+      state: "DC",
+      bmf: null,
+      pub78: null,
+    },
+  ];
+  const keyAt = (version: number) =>
+    JSON.stringify([version, "20260910T030000Z", 10, ["red", "cross"]]);
+
+  test("is not served: the search ranks again and answers revoked", async () => {
+    const cache = memorySearchCache(() => new Date());
+    await cache.set(keyAt(SEARCH_RECORD_VERSION - 1), staleRecords, {
+      ttl: 3600,
+    });
+    await start({ searchCache: cache });
+    const { key } = await insertKey(api);
+
+    const response = await searchAs(`Bearer ${key}`);
+
+    expect(response.status).toBe(200);
+    expect(searchesRun).toBe(1);
+    expect((await response.json()) as OrgSearchResponse).toMatchObject({
+      results: [{ ein: "530196605", is501c3: true, revoked: false }],
+    });
+  });
+
+  test("the same record under the current version's key is served from the cache", async () => {
+    const cache = memorySearchCache(() => new Date());
+    await cache.set(
+      keyAt(SEARCH_RECORD_VERSION),
+      staleRecords.map((record) => ({ ...record, revocation: null })),
+      { ttl: 3600 },
+    );
+    await start({ searchCache: cache });
+    const { key } = await insertKey(api);
+
+    const response = await searchAs(`Bearer ${key}`);
+
+    expect(response.status).toBe(200);
+    expect(searchesRun).toBe(0);
+    expect((await response.json()) as OrgSearchResponse).toMatchObject({
       results: [{ ein: "530196605" }],
     });
   });

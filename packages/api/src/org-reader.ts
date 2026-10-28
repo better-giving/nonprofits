@@ -1,4 +1,4 @@
-import { type Client, LibsqlError } from "@libsql/client";
+import type { Client } from "@libsql/client";
 import type {
   FilingRecord,
   FormType,
@@ -60,9 +60,7 @@ interface RunRow {
 }
 
 function orgSql(foundationCode: boolean): string {
-  // Unqualified: a missing column's prepare error names it as written,
-  // `no such column: foundation_code`, which is the miss this read retries.
-  const foundation = foundationCode ? "foundation_code, " : "";
+  const foundation = foundationCode ? "o.foundation_code, " : "";
   return `
 SELECT o.ein, o.name, o.street, o.city, o.state, o.zip, o.subsection, o.ntee, ${foundation}o.ruling_date,
   o.in_pub78, o.revocation_date, o.reinstatement_date, o.files_990n, o.epostcard_website,
@@ -75,20 +73,6 @@ LEFT JOIN import_runs a ON a.id = o.address_run_id
 LEFT JOIN import_runs b ON b.id = o.bmf_run_id
 WHERE o.ein = ?1`;
 }
-
-function lacksFoundationCode(error: unknown): boolean {
-  return (
-    error instanceof LibsqlError &&
-    error.message.includes("no such column: foundation_code")
-  );
-}
-
-/**
- * A database built before `foundation_code` fails the org batch at prepare
- * time. The miss stays on this client: the served-data resolver keeps one
- * client per served build and opens another when the build changes.
- */
-const foundationCodeMissing = new WeakSet<Client>();
 
 const FILING_SQL = `
 SELECT f.object_id, f.form_type, f.tax_year, f.mission, f.activity_summary, f.website,
@@ -117,25 +101,11 @@ WHERE id IN (
 )`;
 
 /**
- * Reads one EIN from the data database: `OrgReader.read`. One round trip,
- * except the first read of a client whose database has no `foundation_code`
- * column, which takes a second trip and then stays on one.
+ * Reads one EIN from the data database in one round trip: `OrgReader.read`.
+ * `foundationCode` says whether the database has a `foundation_code` column;
+ * a build from before it reads every foundation field as null.
  */
 export async function readOrg(
-  db: Client,
-  ein: string,
-): Promise<OrgRecord | null> {
-  if (foundationCodeMissing.has(db)) return readOrgRows(db, ein, false);
-  try {
-    return await readOrgRows(db, ein, true);
-  } catch (error) {
-    if (!lacksFoundationCode(error)) throw error;
-    foundationCodeMissing.add(db);
-    return readOrgRows(db, ein, false);
-  }
-}
-
-async function readOrgRows(
   db: Client,
   ein: string,
   foundationCode: boolean,

@@ -76,14 +76,14 @@ export interface OrgResponse {
   is501c3: boolean | null;
   /** Raw BMF NTEE code, for example `P20`. Null when that code is absent. */
   ntee: string | null;
-  /** Mapped BMF foundation status. Null when the raw code maps to none. */
+  /** Mapped BMF foundation status. Null when the raw code is absent or maps to none, or the data build has no foundation code. */
   foundationStatus: FoundationStatus | null;
   /** Raw BMF foundation code, for example `15`. Null when that code is absent. */
   foundationCode: string | null;
   /**
-   * Tri-state. `true` when listed in IRS Publication 78, so gifts are
-   * tax-deductible. `false` when Pub 78 is imported and the org is not listed.
-   * `null` when unknown, for example when Pub 78 has not been imported.
+   * `true` when listed in IRS Publication 78. `false` when Pub 78 is imported
+   * and the org is not listed. `null` when unknown, for example when Pub 78 has
+   * not been imported.
    */
   deductible: boolean | null;
   /** Revoked and not reinstated since; null until the revocation list is imported. */

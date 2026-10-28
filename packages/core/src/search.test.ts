@@ -30,7 +30,7 @@ const REVOCATION: SourceFile = {
   fetchedAt: "2026-09-10T03:06:00.000Z",
 };
 
-/** On the imported list with no revocation date: not revoked. */
+/** The revocation list is imported and the org is not on it: not revoked. */
 const NOT_LISTED = {
   revokedOn: null,
   reinstatedOn: null,
@@ -267,6 +267,18 @@ describe("searchOrgs", () => {
       revoked: false,
       revocationDate: "2021-05-17",
       revokedSource: BMF_EO1,
+    },
+    {
+      when: "the BMF ruling month is the revocation month",
+      revocation: {
+        revokedOn: "2021-05-17",
+        reinstatedOn: null,
+        source: REVOCATION,
+      },
+      bmf: { subsection: "03", rulingDate: "2021-05", source: BMF_EO1 },
+      revoked: true,
+      revocationDate: "2021-05-17",
+      revokedSource: REVOCATION,
     },
     {
       when: "revoked and absent from the BMF",

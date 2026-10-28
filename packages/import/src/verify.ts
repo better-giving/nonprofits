@@ -1,3 +1,5 @@
+import { FILING_SIZE_INDEX } from "@nonprofits/db";
+
 /** A new build's row counts may differ from the served one's by this share and still pass. */
 const COUNT_TOLERANCE = 0.1;
 /** What verify counts, each the rows `count(*)` reads: every table's, and the orgs each list fact landed on. */
@@ -106,7 +108,8 @@ export interface VerifyDataOptions {
  * The checks a build's data must pass before it is served, one query each so
  * each one's time shows in the log: every count at its floor (and within 10%
  * of `served`'s), the Red Cross with its mission and in Pub 78, a search index
- * row for each named org, and no row without an EIN. Resolves with the counts.
+ * row for each named org, the filings size index, and no row without an EIN.
+ * Resolves with the counts.
  */
 export async function verifyData(
   read: ReadData,
@@ -159,6 +162,18 @@ export async function verifyData(
     return {
       ok: row !== undefined && row.index_rows === row.named_orgs,
       detail: `${row?.index_rows} index rows, ${row?.named_orgs} named orgs`,
+    };
+  });
+  await check("size index", async () => {
+    const [row] = await read<{ n: number }>(
+      `SELECT count(*) AS n FROM sqlite_schema WHERE type = 'index' AND name = '${FILING_SIZE_INDEX}' AND tbl_name = 'filings'`,
+    );
+    const ok = row?.n === 1;
+    return {
+      ok,
+      detail: ok
+        ? `filings has ${FILING_SIZE_INDEX}`
+        : `filings has no ${FILING_SIZE_INDEX}, which search ranks ties through`,
     };
   });
   await check("null eins", async () => {

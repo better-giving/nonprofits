@@ -1,4 +1,4 @@
-import type { Client } from "@libsql/client";
+import type { Client, ResultSet } from "@libsql/client";
 import { dataTablesDdl, dateCheck } from "./schema.ts";
 import { searchIndexDdl } from "./search-index.ts";
 
@@ -52,17 +52,23 @@ export interface DataBuild {
   built_at: string;
 }
 
-/** Against a data database: the build that finished it, or undefined while unfinished. */
-export async function readDataMeta(
-  data: Client,
-): Promise<DataBuild | undefined> {
-  const rs = await data.execute(
-    "SELECT build_id, built_at FROM data_meta WHERE id = 1",
-  );
+/** Reads `data_meta`'s one row; `dataBuildOf` reads its result. */
+export const DATA_META_SQL =
+  "SELECT build_id, built_at FROM data_meta WHERE id = 1";
+
+/** The build in a `DATA_META_SQL` result, or undefined while unfinished. */
+export function dataBuildOf(rs: ResultSet): DataBuild | undefined {
   const row = rs.rows[0];
   return row
     ? { build_id: String(row.build_id), built_at: String(row.built_at) }
     : undefined;
+}
+
+/** Against a data database: the build that finished it, or undefined while unfinished. */
+export async function readDataMeta(
+  data: Client,
+): Promise<DataBuild | undefined> {
+  return dataBuildOf(await data.execute(DATA_META_SQL));
 }
 
 /**

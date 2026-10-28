@@ -1,5 +1,6 @@
 import type { Client } from "@libsql/client";
 import type { Result } from "@nonprofits/core";
+import { SEARCH_MAX_CANDIDATES } from "@nonprofits/db";
 import type { RateLimiter } from "./limiter.ts";
 
 export interface Limits {
@@ -43,25 +44,23 @@ export function limitsOf(
 export const ROWS_WRITTEN = { metered: 2, whitelisted: 1, refused: 0 };
 
 // Default service-wide daily ceilings, sized so traffic at both stays inside
-// Turso's free plan: 500M rows read and 10M rows written a month. A 31-day
-// month allows 16,129,032 reads and 322,580 writes a day.
+// Turso's free plan: 500M rows read and 10M rows written a month.
+// DAILY_ROWS_READ is the reads spread over a 31-day month.
 //
-// Reads bind. A search ranks up to the search SQL's candidate limit (1,000, search-sql.ts)
-// FTS matches, visiting per match 3 rows: its FTS entry, its `orgs` row and
-// its `filings_size` index row on a current data database (revenue and assets
-// only; the mission text stays unread), measured with .scanstats: up to
-// 3 x 1,000 = 3,000 rows. A database built before that index still answers,
-// reading each filing row instead.
-// About 100 more cover the key check, the counters and a lookup's handful. A
-// caller picks its query, so a ceiling assumes every request is that worst
-// search: 3,100 rows read.
+// Reads bind. A search ranks up to SEARCH_MAX_CANDIDATES FTS matches,
+// visiting per match 3 rows: its FTS entry, its `orgs` row and
+// its `filings_size` index row on a data database built with that index
+// (revenue and assets only; mission and activity_summary stay unread),
+// measured with .scanstats. A database built before that index still
+// answers, reading each filing row instead. About 100 more cover the key
+// check, the counters and a lookup's handful. A caller picks its query, so a
+// ceiling assumes every request is that worst search: WORST_REQUEST_ROWS_READ.
 //
-// The two ceilings take 3/4 of the daily reads, 12,096,774 / 3,100 = 3,902
-// requests, split evenly and rounded down: 1,900 + 1,900 = 3,800 a day,
-// 11,780,000 rows read and 3,800 x ROWS_WRITTEN.metered = 7,600 rows
-// written, under 3% of the day's writes. The other 4,349,032 reads a day
-// (about 1,400 worst searches) are for whitelisted keys, which no ceiling
-// bounds, and the monthly import's checks.
+// The two ceilings, split evenly and rounded down, take at most 3/4 of
+// DAILY_ROWS_READ at WORST_REQUEST_ROWS_READ each (quota.test.ts holds them
+// to it), and their ROWS_WRITTEN.metered per request stays under 3% of the
+// day's writes. The other quarter of the reads is for whitelisted keys, which
+// no ceiling bounds, and the monthly import's checks.
 //
 // That covers admitted traffic only. A refused request writes nothing but
 // still reads: a well-formed made-up key 1-3 rows (the `apikey` key index,
@@ -70,6 +69,13 @@ export const ROWS_WRITTEN = { metered: 2, whitelisted: 1, refused: 0 };
 // client (a made-up key's only bound is the 600-a-minute `keyedRequests`
 // cap), and the in-memory ones count per instance until the platform's
 // limits run in front of the app.
+
+/** Rows Turso's free plan reads a day across a 31-day month. */
+export const DAILY_ROWS_READ = Math.floor(500_000_000 / 31);
+
+/** Rows the worst admitted request reads: a search ranking every candidate, plus the key check and counters. */
+export const WORST_REQUEST_ROWS_READ = 3 * SEARCH_MAX_CANDIDATES + 100;
+
 export const DEFAULT_SERVICE_DAILY_LIMIT: Record<MeteredTier, number> = {
   anonymous: 1_900,
   default: 1_900,
