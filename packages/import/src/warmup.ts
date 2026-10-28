@@ -130,8 +130,9 @@ function queries(): Query[] {
  * then stops. A missing index warns. A query that fails or outlasts
  * `queryTimeoutMs` is a warning, and none is waited on past the end of
  * `budgetMs`, though a timed-out query keeps running on the server. Once less
- * than `WARMUP_MIN_QUERY_MS` of the budget is left, the rest are not started. Rejects only when `signal`
- * aborts, which is a stop, not a warning, with `WarmupStopped`.
+ * of the budget is left than `WARMUP_MIN_QUERY_MS`, or `queryTimeoutMs` when
+ * that is shorter, the rest are not started. Rejects only when `signal`
+ * aborts, with `WarmupStopped`: a stop, not a warning.
  */
 export async function warmUploadedDatabase(
   options: WarmupOptions,

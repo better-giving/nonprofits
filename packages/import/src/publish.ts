@@ -66,7 +66,12 @@ export interface PublishOptions {
   warmupBudgetMs?: number;
   /** How long one warm-up query may run; `WARMUP_QUERY_TIMEOUT_MS` when unset. */
   warmupQueryTimeoutMs?: number;
-  /** Receives the warm-up's report, or a failed warm-up's one warning, before the switch, even when the switch later fails; on a stop during warm-up, the report on the queries that ran. Called once; a throw from it is ignored. */
+  /**
+   * Receives the warm-up's report, or a failed warm-up's one warning, before
+   * the switch, even when the switch later fails; on a stop during warm-up,
+   * the report on the queries that ran. Called at most once; a throw from it
+   * is ignored.
+   */
   onWarmup?: (report: WarmupReport) => void;
 }
 
@@ -167,7 +172,6 @@ async function publish(
   );
   await orRemove(async () => {
     unlessStopped();
-    // a warm-up failure warns and the switch still happens; a stop removes the new database
     const tell = (report: WarmupReport) => {
       try {
         onWarmup?.(report);
@@ -177,6 +181,7 @@ async function publish(
     };
     let data: Client | undefined;
     let report: WarmupReport;
+    // a warm-up failure warns and the switch still happens; a stop removes the new database
     try {
       data = await host.open(database);
       report = await warmUploadedDatabase({
