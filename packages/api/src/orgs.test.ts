@@ -1,6 +1,9 @@
 import type { Client, InStatement } from "@libsql/client";
 import type { OrgResponse } from "@nonprofits/core";
+import { switchServedDatabase } from "@nonprofits/db";
+import { dataDbFixture, type LocalDb } from "@nonprofits/db/fixture";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { POINTER_TTL_MS } from "./data-db.ts";
 import { freshClient, type TestApi, testApi } from "./test-support.ts";
 
 let api: TestApi;
@@ -315,7 +318,10 @@ describe("GET /v1/orgs/:ein", () => {
   });
 });
 
-/** Counts batch statements whose SQL names `foundation_code`, and reads of `orgs`' columns. */
+/**
+ * Counts batch statements whose SQL selects `foundation_code`, and reads of
+ * `orgs`' columns sent in one batch with the `data_meta` read.
+ */
 function countingFoundationCode(
   db: Client,
   counts: { statements: number; columnReads: number },
@@ -324,20 +330,18 @@ function countingFoundationCode(
     get(target, property) {
       if (property === "batch") {
         return (statements: InStatement[], mode?: "read" | "write") => {
-          for (const statement of statements) {
-            const sql =
-              typeof statement === "string" ? statement : statement.sql;
-            if (sql.includes("foundation_code")) counts.statements += 1;
+          const sqls = statements.map((statement) =>
+            typeof statement === "string" ? statement : statement.sql,
+          );
+          const readsMeta = sqls.some((sql) => sql.includes("data_meta"));
+          for (const sql of sqls) {
+            if (sql.includes("pragma_table_info('orgs')")) {
+              if (readsMeta) counts.columnReads += 1;
+            } else if (sql.includes("foundation_code")) {
+              counts.statements += 1;
+            }
           }
           return target.batch(statements, mode);
-        };
-      }
-      if (property === "execute") {
-        return (statement: InStatement) => {
-          const sql = typeof statement === "string" ? statement : statement.sql;
-          if (sql.includes("pragma_table_info('orgs')"))
-            counts.columnReads += 1;
-          return target.execute(statement);
         };
       }
       const value = Reflect.get(target, property, target);
@@ -415,5 +419,52 @@ describe("GET /v1/orgs/:ein on a database with foundation_code", () => {
     }
     expect(counts.statements).toBe(2);
     expect(counts.columnReads).toBe(1);
+  });
+});
+
+describe("GET /v1/orgs/:ein when the served build gains foundation_code", () => {
+  test("follows the pointer switch: null foundation fields, then the column is read", async () => {
+    const counts = { statements: 0, columnReads: 0 };
+    const served = await testApi({
+      fill: async (data) => {
+        await data.execute("ALTER TABLE orgs DROP COLUMN foundation_code");
+      },
+      dataDbAs: (db) => countingFoundationCode(db, counts),
+    });
+    let next: LocalDb | undefined;
+    try {
+      const lookup = async () => {
+        const response = await served.app.request("/v1/orgs/136009999", {
+          headers: freshClient(),
+        });
+        return (await response.json()) as OrgResponse;
+      };
+
+      const before = await lookup();
+      expect(before.foundationCode).toBeNull();
+      expect(before.notes).toContain(
+        "foundation code is not in this data build",
+      );
+      expect(counts.statements).toBe(0);
+
+      next = await dataDbFixture("20261010T030000Z");
+      await switchServedDatabase(served.appDb.client, {
+        expected: "nonprofits-fixture",
+        to: { name: "nonprofits-next", url: next.url },
+        buildId: "20261010T030000Z",
+      });
+      served.clock.advance(POINTER_TTL_MS);
+
+      const after = await lookup();
+      expect(after.foundationCode).toBe("04");
+      expect(after.foundationStatus).toBe("private_foundation");
+      expect(after.notes).not.toContain(
+        "foundation code is not in this data build",
+      );
+      expect(counts.statements).toBe(1);
+    } finally {
+      await served.dispose();
+      await next?.dispose();
+    }
   });
 });

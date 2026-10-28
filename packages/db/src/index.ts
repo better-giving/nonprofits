@@ -1,6 +1,8 @@
 export {
   createDataDatabase,
+  DATA_META_SQL,
   type DataBuild,
+  dataBuildOf,
   finishDataDatabase,
   holdsBuild,
   readDataCounts,

@@ -1,4 +1,4 @@
-import type { Client, InStatement } from "@libsql/client";
+import { type Client, type InStatement, LibsqlError } from "@libsql/client";
 import type {
   OrgResponse,
   OrgSearchResponse,
@@ -16,6 +16,10 @@ import {
 } from "vitest";
 import { searchNames } from "./org-searcher.ts";
 import { freshClient, type TestApi, testApi } from "./test-support.ts";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 /** The fixture's BMF file, which lists the Red Cross. */
 const BMF_DC: SourceFile = {
@@ -462,10 +466,31 @@ describe("GET /v1/search and GET /v1/orgs/:ein", () => {
     },
   });
 
+  /** Per EIN, from the seed's revocation and BMF ruling dates (rules.ts). */
+  const SEEDED_REVOCATION = {
+    // no revocation on record
+    "530196605": { revoked: false, revocationDate: null },
+    // revoked, still in the BMF
+    "201234567": { revoked: true, revocationDate: "2023-05-15" },
+    // BMF ruling date 2022-03 is after the 2021-05 revocation
+    "461234567": { revoked: false, revocationDate: "2021-05-17" },
+    // revoked, absent from the BMF
+    "311234567": { revoked: true, revocationDate: "2019-05-15" },
+  } as const;
+
   test.each([
-    { data: "the seeded data", fill: async () => {} },
+    {
+      data: "the seeded data",
+      expected: SEEDED_REVOCATION,
+      fill: async () => {},
+    },
     {
       data: "a list reinstatement",
+      // reinstated 2024-06-01, after the 2023-05-15 revocation
+      expected: {
+        ...SEEDED_REVOCATION,
+        "201234567": { revoked: false, revocationDate: "2023-05-15" },
+      },
       fill: async (data: Client) => {
         await data.execute(
           "UPDATE orgs SET reinstatement_date = '2024-06-01' WHERE ein = '201234567'",
@@ -474,6 +499,7 @@ describe("GET /v1/search and GET /v1/orgs/:ein", () => {
     },
     {
       data: "two revocation imports",
+      expected: SEEDED_REVOCATION,
       fill: async (data: Client) => {
         await data.execute({
           sql: "INSERT INTO import_runs (id, source, file_url, released_at, fetched_at, row_count) VALUES (6, 'revocation', ?1, ?2, ?3, 3)",
@@ -487,7 +513,7 @@ describe("GET /v1/search and GET /v1/orgs/:ein", () => {
     },
   ])(
     "agree on revocation and cite the same files, on $data",
-    async ({ data, fill }) => {
+    async ({ data, expected, fill }) => {
       const both = await testApi({ fill });
       try {
         for (const [ein, q] of [
@@ -508,6 +534,7 @@ describe("GET /v1/search and GET /v1/orgs/:ein", () => {
             })
           ).json()) as OrgResponse;
 
+          expect(org, ein).toMatchObject(expected[ein]);
           expect(match, ein).toBeDefined();
           if (match === undefined) continue;
           expect(revocationFacts(match), ein).toStrictEqual(
@@ -812,10 +839,6 @@ describe("GET /v1/search on a database built before the size index", () => {
     await legacy.dispose();
   });
 
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
   test("still ranks United Way Worldwide", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const response = await legacy.app.request(
@@ -882,7 +905,30 @@ describe("GET /v1/search when the data database fails another way", () => {
     ).rejects.toThrow("no such table: import_runs");
     expect(calls).toHaveLength(1);
     expect(logged).not.toHaveBeenCalled();
-    logged.mockRestore();
+  });
+
+  test("rejects when a longer index name than the size index is missing", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const missing = `SQLITE_ERROR: no such index: ${FILING_SIZE_INDEX}_v2`;
+    const calls: InStatement[][] = [];
+    const db = new Proxy(failing.dataDb.client, {
+      get(target, property) {
+        if (property === "batch") {
+          return (statements: InStatement[]) => {
+            calls.push(statements);
+            return Promise.reject(new LibsqlError(missing, "SQLITE_ERROR"));
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+
+    await expect(searchNames(db, ["united", "way"], 5)).rejects.toThrow(
+      missing,
+    );
+    expect(calls).toHaveLength(1);
+    expect(logged).not.toHaveBeenCalled();
   });
 });
 
@@ -920,7 +966,6 @@ describe("GET /v1/search after a legacy database gains the size index", () => {
     expect(indexed[0]?.ein).toBe("131635294");
     expect(after).toHaveLength(1);
     expect(matchSql(after[0])).toContain(`INDEXED BY ${FILING_SIZE_INDEX}`);
-    vi.restoreAllMocks();
   });
 });
 

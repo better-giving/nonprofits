@@ -1,5 +1,10 @@
 import type { Client } from "@libsql/client";
-import { holdsBuild, readDataMeta, readServedDatabase } from "@nonprofits/db";
+import {
+  DATA_META_SQL,
+  dataBuildOf,
+  holdsBuild,
+  readServedDatabase,
+} from "@nonprofits/db";
 import { logFailure } from "./log.ts";
 
 /** The data database a request reads, and the build it holds. */
@@ -10,12 +15,22 @@ export interface ServedData {
   foundationCode: boolean;
 }
 
-/** Whether `orgs` has a `foundation_code` column, read from the schema. */
-async function hasFoundationCode(client: Client): Promise<boolean> {
-  const rs = await client.execute(
-    "SELECT 1 FROM pragma_table_info('orgs') WHERE name = 'foundation_code'",
+const FOUNDATION_CODE_COLUMN_SQL =
+  "SELECT 1 FROM pragma_table_info('orgs') WHERE name = 'foundation_code'";
+
+/**
+ * A data database's build and whether `orgs` has a `foundation_code` column,
+ * read in one round trip from one snapshot.
+ */
+async function readBuildSchema(client: Client) {
+  const [meta, column] = await client.batch(
+    [DATA_META_SQL, FOUNDATION_CODE_COLUMN_SQL],
+    "read",
   );
-  return rs.rows.length > 0;
+  if (meta === undefined || column === undefined) {
+    throw new Error("a read batch of two statements returned fewer results");
+  }
+  return { meta: dataBuildOf(meta), foundationCode: column.rows.length > 0 };
 }
 
 /** The pointer names no database yet: the first import hasn't switched to one. */
@@ -62,14 +77,11 @@ export function servedDataResolver(
     const client = openDataDb(database.url);
     let foundationCode: boolean;
     try {
-      const [meta, hasColumn] = await Promise.all([
-        readDataMeta(client),
-        hasFoundationCode(client),
-      ]);
-      if (!holdsBuild(buildId, meta)) {
+      const schema = await readBuildSchema(client);
+      if (!holdsBuild(buildId, schema.meta)) {
         throw new Error(`${database.name} does not hold build ${buildId}`);
       }
-      foundationCode = hasColumn;
+      foundationCode = schema.foundationCode;
     } catch (error) {
       client.close();
       throw error;

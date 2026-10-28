@@ -25,11 +25,13 @@ interface RunRow {
   fetched_at: string;
 }
 
+// the name ends at a non-identifier character, so `filings_size_v2` is not it
+const MISSING_SIZE_INDEX = new RegExp(
+  `no such index: ${FILING_SIZE_INDEX}(?![\\w$])`,
+);
+
 function lacksSizeIndex(error: unknown): boolean {
-  return (
-    error instanceof LibsqlError &&
-    error.message.includes(`no such index: ${FILING_SIZE_INDEX}`)
-  );
+  return error instanceof LibsqlError && MISSING_SIZE_INDEX.test(error.message);
 }
 
 /**

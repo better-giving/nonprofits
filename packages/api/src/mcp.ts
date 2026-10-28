@@ -39,6 +39,9 @@ const REVOKED_TRISTATE =
 const REVOCATION_DATE =
   "YYYY-MM-DD from the auto-revocation list, or null when that list has no date. Still returned after a later reinstatement.";
 
+const WEBSITE_SOURCE =
+  "The raw website from the organization's latest e-filed 990, or from its 990-N e-Postcard when the 990 has none or only the e-Postcard's is a web address. `provenance.website` cites which.";
+
 const LOOKUP_DESCRIPTION = `Look up a US tax-exempt organization by its EIN (Employer Identification Number: the 9-digit number the IRS identifies an organization by). Pass it as a string, with or without the dash: "530196605" or "53-0196605".
 
 Returns the organization's name, address, 501(c)(3) status, NTEE code, foundation status, the raw foundation code, whether gifts to it are tax-deductible (IRS Pub 78), revocation status, mission, activity summary, top programs, latest finances, website and an https website URL. Every fact is read from IRS bulk data files, and \`provenance\` names the IRS file (and, for facts from a 990, the filing and tax year) each fact came from.
@@ -47,7 +50,7 @@ Returns the organization's name, address, 501(c)(3) status, NTEE code, foundatio
 
 \`revoked\` is tri-state. ${REVOKED_TRISTATE} \`revocationDate\`: ${REVOCATION_DATE}
 
-\`ntee\` is the raw NTEE code from the IRS Business Master File, for example "P20", or null when that file has none. \`foundationStatus\` is "public_charity", "private_foundation", or "private_operating_foundation", from the Business Master File foundation code. It is null when the code is missing, when the code is 00, when it is in suspense, when it is unrecognized (including 25 when the subsection is not 03), or when the data build has no foundation column. \`foundationCode\` is that raw code, or null. \`website\` is the raw value. \`websiteUrl\` is that value as an https URL, or null when there is no website or it is not a web address.
+\`ntee\` is the raw NTEE code from the IRS Business Master File, for example "P20", or null when that file has none. \`foundationStatus\` is "public_charity", "private_foundation", or "private_operating_foundation", from the Business Master File foundation code. It is null when the code is missing, when the code is 00, when it is in suspense, when it is unrecognized (including 25 when the subsection is not 03), or when the data build has no foundation column. \`foundationCode\` is that raw code, or null. \`website\`: ${WEBSITE_SOURCE} \`websiteUrl\` is \`website\` as an https URL, or null when there is no website or it is not a web address.
 
 A fact is null when the IRS data doesn't carry it, and \`notes\` says why. For example, \`mission\` is null for an organization that files only a 990-N postcard, for a 990-PF private foundation, or when its latest 990 states none or puts it on Schedule O, which isn't extracted.
 
@@ -215,7 +218,7 @@ const LOOKUP_OUTPUT = z.object({
       taxYear: z.number(),
     })
     .nullable(),
-  website: z.string().nullable(),
+  website: z.string().nullable().describe(WEBSITE_SOURCE),
   websiteUrl: z
     .string()
     .nullable()

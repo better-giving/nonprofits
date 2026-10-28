@@ -731,6 +731,18 @@ describe("/mcp without a key", () => {
     expect(lookup?.description).toContain("foundationStatus");
   });
 
+  test("lookup description and output schema say website falls back to the 990-N e-Postcard's", async () => {
+    await start();
+    const client = await connect(freshClient());
+    const { tools } = await client.listTools();
+    const lookup = tools.find((listed) => listed.name === "lookup_nonprofit");
+    const websiteSource =
+      "or from its 990-N e-Postcard when the 990 has none or only the e-Postcard's is a web address";
+
+    expect(lookup?.description).toContain(websiteSource);
+    expect(JSON.stringify(lookup?.outputSchema)).toContain(websiteSource);
+  });
+
   test("lookup description and output schema say foundationStatus is null for a missing, 00, suspense, or unrecognized code", async () => {
     await start();
     const client = await connect(freshClient());

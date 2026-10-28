@@ -124,6 +124,10 @@ interface FoundationFacts {
   codeSource: SourceFile | null;
 }
 
+/** The note on an org read from a data build that has no foundation code column. */
+export const FOUNDATION_NOT_IN_BUILD =
+  "foundation code is not in this data build";
+
 /**
  * IRS Exempt Organizations Business Master File Extract information sheet,
  * FOUNDATION CODE, https://www.irs.gov/pub/irs-soi/eo-info.pdf (00 all
@@ -136,10 +140,6 @@ interface FoundationFacts {
  * foundation codes 10–15. EO status code 25 (IRC 507(b)(1)(B)) is a different
  * field and is not this mapping.
  */
-/** The note on an org read from a data build that has no foundation code column. */
-export const FOUNDATION_NOT_IN_BUILD =
-  "foundation code is not in this data build";
-
 function foundationOf(record: OrgRecord): FoundationFacts {
   const source = record.bmf?.source ?? null;
   if (!record.foundationCodeInBuild) {
