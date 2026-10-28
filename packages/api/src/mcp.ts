@@ -4,7 +4,12 @@ import {
   McpServer,
   originValidationResponse,
 } from "@modelcontextprotocol/server";
-import type { OrgResponse, OrgSearchResponse, Result } from "@nonprofits/core";
+import {
+  FOUNDATION_NOT_IN_BUILD,
+  type OrgResponse,
+  type OrgSearchResponse,
+  type Result,
+} from "@nonprofits/core";
 import { bodyLimit } from "hono/body-limit";
 import { createFactory } from "hono/factory";
 import { z } from "zod";
@@ -42,7 +47,7 @@ Returns the organization's name, address, 501(c)(3) status, NTEE code, foundatio
 
 \`revoked\` is tri-state. ${REVOKED_TRISTATE} \`revocationDate\`: ${REVOCATION_DATE}
 
-\`ntee\` is the raw NTEE code from the IRS Business Master File, for example "P20", or null when that file has none. \`foundationStatus\` is "public_charity", "private_foundation", or "private_operating_foundation", from the Business Master File foundation code. It is null when the code is missing, when the code is 00, when it is in suspense, when it is unrecognized (including 25 when the subsection is not 03), or when the data build has no foundation column. \`foundationCode\` is that raw code, or null. \`website\` is the raw value. \`websiteUrl\` is that value as an https URL, or null when it is not a web address. \`notes\` says which of these is null, and why.
+\`ntee\` is the raw NTEE code from the IRS Business Master File, for example "P20", or null when that file has none. \`foundationStatus\` is "public_charity", "private_foundation", or "private_operating_foundation", from the Business Master File foundation code. It is null when the code is missing, when the code is 00, when it is in suspense, when it is unrecognized (including 25 when the subsection is not 03), or when the data build has no foundation column. \`foundationCode\` is that raw code, or null. \`website\` is the raw value. \`websiteUrl\` is that value as an https URL, or null when there is no website or it is not a web address.
 
 A fact is null when the IRS data doesn't carry it, and \`notes\` says why. For example, \`mission\` is null for an organization that files only a 990-N postcard, for a 990-PF private foundation, or when its latest 990 states none or puts it on Schedule O, which isn't extracted.
 
@@ -71,16 +76,17 @@ function yesNo(fact: boolean | null): string {
   return fact === null ? "unknown" : fact ? "yes" : "no";
 }
 
-function foundationPhrase(
-  status: OrgResponse["foundationStatus"],
-  code: string | null,
-): string {
+function foundationPhrase(org: OrgResponse): string {
+  if (org.notes.includes(FOUNDATION_NOT_IN_BUILD)) {
+    return "unknown (not in this data build)";
+  }
+  const code = org.foundationCode;
   const label =
-    status === "public_charity"
+    org.foundationStatus === "public_charity"
       ? "public charity"
-      : status === "private_foundation"
+      : org.foundationStatus === "private_foundation"
         ? "private foundation"
-        : status === "private_operating_foundation"
+        : org.foundationStatus === "private_operating_foundation"
           ? "private operating foundation"
           : code === null
             ? "none on record"
@@ -97,7 +103,7 @@ function renderOrg(org: OrgResponse): string {
   const lines = [
     `${org.name ?? "(no name on record)"}, EIN ${org.ein}${where === "" ? "" : `, ${where}`}`,
     `501(c)(3): ${yesNo(org.is501c3)}. Tax-deductible (Pub 78): ${yesNo(org.deductible)}. Revoked: ${yesNo(org.revoked)}.`,
-    `NTEE: ${org.ntee ?? "none on record"}. Foundation: ${foundationPhrase(org.foundationStatus, org.foundationCode)}.`,
+    `NTEE: ${org.ntee ?? "none on record"}. Foundation: ${foundationPhrase(org)}.`,
     `Mission: ${org.mission ?? "none on record"}`,
   ];
   if (org.website !== null) lines.push(`Website: ${org.website}`);
@@ -181,7 +187,7 @@ const LOOKUP_OUTPUT = z.object({
     ])
     .nullable()
     .describe(
-      '"public_charity", "private_foundation", or "private_operating_foundation", from the Business Master File foundation code. Null when the code is missing, when the code is 00, when it is in suspense, when it is unrecognized (including 25 when the subsection is not 03), or when the data build has no foundation column.',
+      "From the Business Master File foundation code. Null when the code is missing, when the code is 00, when it is in suspense, when it is unrecognized (including 25 when the subsection is not 03), or when the data build has no foundation column.",
     ),
   foundationCode: z
     .string()
@@ -214,7 +220,7 @@ const LOOKUP_OUTPUT = z.object({
     .string()
     .nullable()
     .describe(
-      "The raw website as an https URL, or null when it is not a web address.",
+      "The raw website as an https URL, or null when there is no website or it is not a web address.",
     ),
   notes: z.array(z.string()),
   provenance: z.object({

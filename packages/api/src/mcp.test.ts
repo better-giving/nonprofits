@@ -406,6 +406,56 @@ describe("/mcp with a key", () => {
     },
   );
 
+  test.each([
+    // the seed's own code
+    { code: "04", phrase: "Foundation: private foundation (04)." },
+    { code: "03", phrase: "Foundation: private operating foundation (03)." },
+  ])(
+    "lookup_nonprofit renders foundation code $code by its status",
+    async ({ code, phrase }) => {
+      await start({
+        fill: async (data) => {
+          await data.execute({
+            sql: "UPDATE orgs SET foundation_code = ? WHERE ein = '136009999'",
+            args: [code],
+          });
+        },
+      });
+      const client = await connect(await keyed());
+
+      const result = await client.callTool({
+        name: "lookup_nonprofit",
+        arguments: { ein: "136009999" },
+      });
+
+      const rendered = result.content[0];
+      if (rendered?.type !== "text") throw new Error("lookup text is missing");
+      expect(rendered.text.split("\n")).toContain(`NTEE: T20. ${phrase}`);
+    },
+  );
+
+  test("lookup_nonprofit on a data build without foundation codes says the status is unknown, not none", async () => {
+    await start({
+      fill: async (data) => {
+        await data.execute("ALTER TABLE orgs DROP COLUMN foundation_code");
+      },
+    });
+    const client = await connect(await keyed());
+
+    const result = await client.callTool({
+      name: "lookup_nonprofit",
+      arguments: { ein: "530196605" },
+    });
+
+    const rendered = result.content[0];
+    if (rendered?.type !== "text") throw new Error("lookup text is missing");
+    expect(rendered.text.split("\n")).toContain(
+      "NTEE: P20. Foundation: unknown (not in this data build).",
+    );
+    expect(rendered.text).not.toContain("none on record (");
+    expect(rendered.text).not.toContain("Foundation: none on record");
+  });
+
   test("lookup_nonprofit renders foundation code 00 as no status and keeps the code", async () => {
     await start();
     const client = await connect(await keyed());

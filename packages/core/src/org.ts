@@ -76,7 +76,7 @@ export interface OrgResponse {
   is501c3: boolean | null;
   /** Raw BMF NTEE code, for example `P20`. Null when that code is absent. */
   ntee: string | null;
-  /** Mapped BMF foundation status. Null when the raw code maps to none. */
+  /** Mapped BMF foundation status. Null when the raw code is absent or maps to none, or the data build has no foundation code. */
   foundationStatus: FoundationStatus | null;
   /** Raw BMF foundation code, for example `15`. Null when that code is absent. */
   foundationCode: string | null;

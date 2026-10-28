@@ -6,6 +6,16 @@ import { logFailure } from "./log.ts";
 export interface ServedData {
   client: Client;
   buildId: string;
+  /** `orgs` has a `foundation_code` column: a build from before it has none. */
+  foundationCode: boolean;
+}
+
+/** Whether `orgs` has a `foundation_code` column, read from the schema. */
+async function hasFoundationCode(client: Client): Promise<boolean> {
+  const rs = await client.execute(
+    "SELECT 1 FROM pragma_table_info('orgs') WHERE name = 'foundation_code'",
+  );
+  return rs.rows.length > 0;
 }
 
 /** The pointer names no database yet: the first import hasn't switched to one. */
@@ -50,16 +60,28 @@ export function servedDataResolver(
       return known;
     }
     const client = openDataDb(database.url);
+    let foundationCode: boolean;
     try {
-      if (!holdsBuild(buildId, await readDataMeta(client))) {
+      const [meta, hasColumn] = await Promise.all([
+        readDataMeta(client),
+        hasFoundationCode(client),
+      ]);
+      if (!holdsBuild(buildId, meta)) {
         throw new Error(`${database.name} does not hold build ${buildId}`);
       }
+      foundationCode = hasColumn;
     } catch (error) {
       client.close();
       throw error;
     }
     // the client it replaces stays open: requests already reading it finish
-    known = { client, buildId, url: database.url, readAt: nowMs };
+    known = {
+      client,
+      buildId,
+      foundationCode,
+      url: database.url,
+      readAt: nowMs,
+    };
     return known;
   }
 

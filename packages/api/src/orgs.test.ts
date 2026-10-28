@@ -304,7 +304,7 @@ describe("GET /v1/orgs/:ein", () => {
       mission:
         "Promote civic engagement and neighborhood improvement in Riverton.",
     });
-    expect(body.notes).toContain("not a 501(c)(3): no foundation status");
+    expect(body.notes).toContain("foundation code 00: no foundation status");
     expect(body.provenance.foundationStatus).toBeNull();
     expect(body.provenance.foundationCode).toStrictEqual({
       file: "https://www.irs.gov/pub/irs-soi/eo_dc.csv",
@@ -315,10 +315,10 @@ describe("GET /v1/orgs/:ein", () => {
   });
 });
 
-/** Counts batch statements whose SQL names `foundation_code`. */
+/** Counts batch statements whose SQL names `foundation_code`, and reads of `orgs`' columns. */
 function countingFoundationCode(
   db: Client,
-  counts: { statements: number },
+  counts: { statements: number; columnReads: number },
 ): Client {
   return new Proxy(db, {
     get(target, property) {
@@ -332,6 +332,14 @@ function countingFoundationCode(
           return target.batch(statements, mode);
         };
       }
+      if (property === "execute") {
+        return (statement: InStatement) => {
+          const sql = typeof statement === "string" ? statement : statement.sql;
+          if (sql.includes("pragma_table_info('orgs')"))
+            counts.columnReads += 1;
+          return target.execute(statement);
+        };
+      }
       const value = Reflect.get(target, property, target);
       return typeof value === "function" ? value.bind(target) : value;
     },
@@ -340,14 +348,14 @@ function countingFoundationCode(
 
 describe("GET /v1/orgs/:ein on a database built before foundation_code", () => {
   let legacy: TestApi;
-  const foundationCodeSql = { statements: 0 };
+  const counts = { statements: 0, columnReads: 0 };
 
   beforeAll(async () => {
     legacy = await testApi({
       fill: async (data) => {
         await data.execute("ALTER TABLE orgs DROP COLUMN foundation_code");
       },
-      dataDbAs: (db) => countingFoundationCode(db, foundationCodeSql),
+      dataDbAs: (db) => countingFoundationCode(db, counts),
     });
   });
 
@@ -355,39 +363,57 @@ describe("GET /v1/orgs/:ein on a database built before foundation_code", () => {
     await legacy.dispose();
   });
 
-  test("answers 200 with null foundation fields and does not select the column again", async () => {
-    const first = await legacy.app.request("/v1/orgs/530196605", {
-      headers: freshClient(),
+  test("answers 200 with null foundation fields, never selecting the column, and reads the schema once per client", async () => {
+    for (let i = 0; i < 2; i += 1) {
+      const response = await legacy.app.request("/v1/orgs/530196605", {
+        headers: freshClient(),
+      });
+      const body = (await response.json()) as OrgResponse;
+
+      expect(response.status).toBe(200);
+      expect(body.foundationStatus).toBeNull();
+      expect(body.foundationCode).toBeNull();
+      expect(body.ntee).toBe("P20");
+      expect(body.websiteUrl).toBe("https://www.redcross.org");
+      expect(body.notes).toContain("foundation code is not in this data build");
+      expect(body.notes).not.toContain("no foundation code on record");
+      expect(body.provenance.foundationStatus).toBeNull();
+      expect(body.provenance.foundationCode).toBeNull();
+    }
+    expect(counts.statements).toBe(0);
+    expect(counts.columnReads).toBe(1);
+  });
+});
+
+describe("GET /v1/orgs/:ein on a database with foundation_code", () => {
+  let current: TestApi;
+  const counts = { statements: 0, columnReads: 0 };
+
+  beforeAll(async () => {
+    current = await testApi({
+      dataDbAs: (db) => countingFoundationCode(db, counts),
     });
-    const firstBody = (await first.json()) as OrgResponse;
+  });
 
-    expect(first.status).toBe(200);
-    expect(firstBody.foundationStatus).toBeNull();
-    expect(firstBody.foundationCode).toBeNull();
-    expect(firstBody.ntee).toBe("P20");
-    expect(firstBody.websiteUrl).toBe("https://www.redcross.org");
-    expect(firstBody.notes).toContain(
-      "foundation code is not in this data build",
-    );
-    expect(firstBody.notes).not.toContain("no foundation code on record");
-    expect(firstBody.provenance.foundationStatus).toBeNull();
-    expect(firstBody.provenance.foundationCode).toBeNull();
-    expect(foundationCodeSql.statements).toBe(1);
+  afterAll(async () => {
+    await current.dispose();
+  });
 
-    foundationCodeSql.statements = 0;
-    const second = await legacy.app.request("/v1/orgs/530196605", {
-      headers: freshClient(),
-    });
-    const secondBody = (await second.json()) as OrgResponse;
+  test("selects the column on every read and reads the schema once per client", async () => {
+    for (let i = 0; i < 2; i += 1) {
+      const response = await current.app.request("/v1/orgs/136009999", {
+        headers: freshClient(),
+      });
+      const body = (await response.json()) as OrgResponse;
 
-    expect(second.status).toBe(200);
-    expect(secondBody.foundationStatus).toBeNull();
-    expect(secondBody.foundationCode).toBeNull();
-    expect(secondBody.ntee).toBe("P20");
-    expect(secondBody.websiteUrl).toBe("https://www.redcross.org");
-    expect(secondBody.notes).toContain(
-      "foundation code is not in this data build",
-    );
-    expect(foundationCodeSql.statements).toBe(0);
+      expect(response.status).toBe(200);
+      expect(body.foundationCode).toBe("04");
+      expect(body.foundationStatus).toBe("private_foundation");
+      expect(body.notes).not.toContain(
+        "foundation code is not in this data build",
+      );
+    }
+    expect(counts.statements).toBe(2);
+    expect(counts.columnReads).toBe(1);
   });
 });
