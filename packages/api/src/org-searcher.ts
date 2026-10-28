@@ -1,6 +1,7 @@
 import { type Client, LibsqlError } from "@libsql/client";
 import type { OrgSearchRecord, SourceFile } from "@nonprofits/core";
 import { FILING_SIZE_INDEX, matchExpression, searchSql } from "@nonprofits/db";
+import { logFailure } from "./log.ts";
 import { rowsOf } from "./rows.ts";
 
 interface MatchRow {
@@ -58,51 +59,26 @@ export const SEARCH_RECORD_VERSION = 3;
 /**
  * The match query and the source-run query in one round trip. A database
  * built before `filings_size` fails the indexed join at prepare time, before
- * it reads any filing; the same batch then runs without the index. The next
- * search tries the index again, so creating it starts being used without a
- * new process.
+ * it reads any filing; that is logged, and the same batch then runs without
+ * the index. The next search tries the index again, so an index created later
+ * is used without restarting the process.
  */
 async function matchBatch(db: Client, words: string[], limit: number) {
-  const args = [matchExpression(words), limit] as const;
-  try {
-    return await db.batch(
-      [{ sql: searchSql(true), args: [...args] }, SOURCE_RUNS_SQL],
+  const batch = (indexed: boolean) =>
+    db.batch(
+      [
+        { sql: searchSql(indexed), args: [matchExpression(words), limit] },
+        SOURCE_RUNS_SQL,
+      ],
       "read",
     );
-  } catch (error) {
-    if (!lacksSizeIndex(error)) throw error;
-    return db.batch(
-      [{ sql: searchSql(false), args: [...args] }, SOURCE_RUNS_SQL],
-      "read",
-    );
-  }
-}
-
-/** Detail lines of the plan behind `searchNames`, in order. */
-export async function searchMatchPlan(
-  db: Client,
-  words: string[],
-  limit: number,
-): Promise<string[]> {
   try {
-    return await explainMatch(db, true, words, limit);
+    return await batch(true);
   } catch (error) {
     if (!lacksSizeIndex(error)) throw error;
-    return explainMatch(db, false, words, limit);
+    logFailure("search_size_index_missing", error);
+    return batch(false);
   }
-}
-
-async function explainMatch(
-  db: Client,
-  indexed: boolean,
-  words: string[],
-  limit: number,
-): Promise<string[]> {
-  const plan = await db.execute({
-    sql: `EXPLAIN QUERY PLAN ${searchSql(indexed)}`,
-    args: [matchExpression(words), limit],
-  });
-  return plan.rows.map((row) => String(row.detail));
 }
 
 /** Searches org names in one round trip to the data database: `OrgSearcher.search`. */
