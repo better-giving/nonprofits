@@ -4,10 +4,10 @@ Shared instructions for coding agents. Stack, commands, layout, conventions, and
 
 ## Stack
 
-- **Node 24.** `.nvmrc` is `24`, root `engines.node` is `>=24`, and `@nonprofits/api` engines is `24.x`. CI (`.github/workflows/ci.yml` and `import.yml`) installs that file with `actions/setup-node` and does not name a patch. The Cursor cloud agent pins **24.21.0** (Node 24 LTS, Krypton, released 2026-09-07) in `.cursor/environment.json`, because neither `.nvmrc` nor CI names a patch.
-- **pnpm 12.4.2**, the `packageManager` field. CI's `pnpm/action-setup` reads it. The cloud agent installs it with Corepack (`corepack prepare pnpm@12.4.2 --activate`), then `pnpm install --frozen-lockfile`.
-- **TypeScript**, **Biome**, and **Vitest**, versions in the `catalog` of `pnpm-workspace.yaml`. `pnpm check` runs all three.
-- **Libraries**, same catalog: Hono, `@modelcontextprotocol/server`, `@libsql/client`, `better-auth` and `@better-auth/api-key`, Kysely, Zod, `csv-parse`, `@vercel/firewall`, `@vercel/functions`. A package depends on a catalog entry with `"catalog:"`. Do not pin a different version in a package.
+- **Node 24**, from `.nvmrc`; CI reads it through `actions/setup-node`'s `node-version-file`. Only `.cursor/environment.json` pins a patch (`NODE_VERSION`), and its `NODE_SHA256` has to change with it: the install checks the tarball against that hash.
+- **pnpm**, the version in the root `packageManager` field. CI's `pnpm/action-setup` reads it; `.cursor/environment.json` repeats it as `PNPM_VERSION`, so a bump changes both.
+- **TypeScript**, **Biome**, and **Vitest**, versions in the `catalog` of `pnpm-workspace.yaml`.
+- **Libraries**, same catalog: Hono, `@modelcontextprotocol/server`, `@libsql/client`, `better-auth` and `@better-auth/api-key`, Kysely, Zod, `csv-parse`, `@vercel/firewall`, `@vercel/functions`. A package depends on a catalog entry with `"catalog:"`. Do not pin a different version in a package; nothing checks this.
 
 ## Commands
 
@@ -18,9 +18,9 @@ pnpm install --frozen-lockfile
 pnpm check
 ```
 
-`pnpm check` is `biome check .`, then `pnpm typecheck` (`pnpm -r --workspace-concurrency=1 typecheck`), then `vitest run`. That is the gate a change has to pass.
+`pnpm check` (root `package.json`) is the gate a change has to pass: Biome, then typecheck, then the whole Vitest suite.
 
-Before a commit, `.claude/skills/verify/` runs the quick pair: `pnpm exec biome check .`, then `pnpm typecheck`. `pnpm format` writes formatting. `pnpm test` is the Vitest suite without Biome or typecheck.
+Before a commit, `.claude/skills/verify/` runs the quick pair: `pnpm exec biome check .`, then `pnpm typecheck`. `pnpm format` leaves import order alone, which `biome check` also gates; `pnpm exec biome check --write .` fixes both.
 
 How to run the API, mint a local key, or build a month of IRS data: [CONTRIBUTING.md](CONTRIBUTING.md). How the suite is laid out: [TESTING.md](TESTING.md).
 
@@ -34,23 +34,21 @@ How to run the API, mint a local key, or build a month of IRS data: [CONTRIBUTIN
 | `@nonprofits/import` | Monthly IRS bulk-file job and `.github/workflows/import.yml` | `db` |
 | `@nonprofits/cli` | API-key admin. Talks to the api over HTTP | In tests only, `@nonprofits/api/test-support` |
 
-`import` does not import `api` or `core`. `api` does not import `import` or `cli`. `db` does not import `api` or `import`. `core` stays free of I/O, SQL, and framework code.
+`pnpm typecheck` enforces the "May import" column: a workspace package missing from a package's `dependencies` and `devDependencies` does not resolve there. `cli`'s "in tests only" is the exception: `@nonprofits/api` is a `cli` devDependency, so nothing stops `cli`'s `src` importing it. Nothing checks that `core` stays free of I/O, SQL, and framework code.
 
-Other roots: `packages/api/vercel.json` (region, cron, build), `packages/api/.env.example` (every variable the api reads, placeholders only), `vitest.config.ts` (one project: `packages/*/{src,test}/**/*.test.ts`), `tsconfig.base.json`.
+A new variable the api reads goes in `PRODUCTION_ENV` (`packages/api/src/production.ts`) and in `packages/api/.env.example`, a `required` or `secret` one as a `replace-with-` placeholder and an `optional` one empty; `packages/api/src/deploy.test.ts` fails when the two lists differ or when the example sets a `required` or `secret` variable to a value that would serve. A test runs only if its path matches `packages/*/{src,test}/**/*.test.ts` (`vitest.config.ts`).
 
 ## Conventions
 
-- ESM (`"type": "module"`). TypeScript is strict: `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `verbatimModuleSyntax`, `NodeNext`. Import `.ts` extensions.
-- Biome uses two-space indent and organizes imports. `biome check` is the format and import check; the linter preset is `none`.
-- Tests use local libSQL files from `appDbFixture()` and `dataDbFixture()`, and each fixture is disposed. API tests build the app with `testApi()` and call `api.app.request`: no listening server. Limiters and the search cache read `testClock()`. The default fake `fetch` rejects every call.
-- A value a test uses in place of a secret is a dummy, such as `test-only-better-auth-secret-0123456789abcdef`. Committed placeholders start with `replace-with-`. `isSecretSet` treats a placeholder, a short string, or an unset variable as unset. API keys are stored hashed.
+- Relative imports end in `.ts`, not `.js`; the compiler accepts both, and nothing checks which.
+- Committed placeholders start with `replace-with-`, and `isSecretSet` treats a placeholder, a string under 32 characters, or an unset variable as unset.
 
 ## Never
 
-- Never commit a secret, token, credential, or production environment value. This repository is public. Those values live in Vercel environment variables, GitHub Actions secrets, or a gitignored `.env.*` file. `.env.example` is the only committed env file, and it holds placeholders.
-- Never put a real secret in `.cursor/environment.json`, docs, fixtures, logs, or tests. When a test needs a secret-shaped value, use a dummy.
+- Never commit a secret, token, credential, or production environment value. This repository is public. Those values live in Vercel environment variables, GitHub Actions secrets, or a gitignored `.env.*` file. `.gitignore` is the only check, and it covers `.env` and `.env.*` files alone, `.env.example` excepted.
+- Never write a secret to a log. When a test needs a secret-shaped value, use a dummy such as `test-only-better-auth-secret-0123456789abcdef`.
 - Never weaken a test so a change goes green: do not skip it, delete it, loosen the expected value, stub out the behavior it guards, or raise a timeout to hide a failure. Fix the code the test is about.
 - Never point tests, fixtures, or the agent install at production Turso, Vercel, or GitHub credentials.
-- Never let a test reach the network.
-- Never store or log an API key in plaintext.
+- Never let a test reach the network. `testApi()`'s default `fetch` rejects every call; nothing stops a direct `fetch` elsewhere.
+- Never store an API key in plaintext.
 - Never install without `--frozen-lockfile` in CI or in `.cursor/environment.json`, and never hand-edit `pnpm-lock.yaml`.

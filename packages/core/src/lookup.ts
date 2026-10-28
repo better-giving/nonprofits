@@ -124,6 +124,10 @@ interface FoundationFacts {
   codeSource: SourceFile | null;
 }
 
+/** The note on an org read from a data build that has no foundation code column. */
+export const FOUNDATION_NOT_IN_BUILD =
+  "foundation code is not in this data build";
+
 /**
  * IRS Exempt Organizations Business Master File Extract information sheet,
  * FOUNDATION CODE, https://www.irs.gov/pub/irs-soi/eo-info.pdf (00 all
@@ -142,7 +146,7 @@ function foundationOf(record: OrgRecord): FoundationFacts {
     return {
       status: null,
       code: null,
-      note: "foundation code is not in this data build",
+      note: FOUNDATION_NOT_IN_BUILD,
       statusSource: null,
       codeSource: null,
     };
@@ -195,7 +199,7 @@ function foundationStatus(
 }
 
 function foundationNote(code: string): string {
-  if (code === "00") return "not a 501(c)(3): no foundation status";
+  if (code === "00") return "foundation code 00: no foundation status";
   if (code === "09") return "foundation status is in suspense";
   return "unrecognized foundation code";
 }
@@ -303,33 +307,49 @@ function toWebsiteUrl(raw: string): string | null {
   // Reject userinfo only: an @ in the path, query, or fragment is still an address.
   if (url.username !== "" || url.password !== "") return null;
 
-  const hostname = url.hostname;
-  const labels = hostname.split(".");
+  // One trailing dot is the fully-qualified form of the same host.
+  if (url.hostname.endsWith(".")) url.hostname = url.hostname.slice(0, -1);
+  const labels = url.hostname.split(".");
   const tld = labels.at(-1);
   if (labels.length < 2 || tld === undefined) return null;
-  if (labels.some((label) => label.length === 0)) return null;
+  if (!labels.every((label) => HOST_LABEL.test(label))) return null;
   if (!/^[a-z]{2,}$/i.test(tld)) return null;
 
   if (httpInput && url.port === "80") url.port = "";
 
-  const serialized = url.href.toLowerCase();
+  // The parser already lowercased the scheme and host; path and query keep their case.
+  const serialized = url.href;
   if (url.pathname === "/" && url.search === "" && url.hash === "") {
     return serialized.slice(0, -1);
   }
   return serialized;
 }
 
-/** The 990's website wins over the e-Postcard's. */
+/** A DNS label: 1 to 63 letters, digits, or hyphens, not starting or ending with a hyphen. */
+const HOST_LABEL = /^(?!-)[a-z0-9-]{1,63}(?<!-)$/i;
+
+/**
+ * The 990's website wins over the e-Postcard's, unless only the e-Postcard's
+ * is a web address. When neither is, the 990's still wins, raw.
+ */
 function pickWebsite(
   record: OrgRecord,
   citation: FilingCitation | null,
 ): { url: string; source: SourceFile | FilingCitation } | null {
+  const candidates: { url: string; source: SourceFile | FilingCitation }[] = [];
   const filingWebsite = record.efile?.filing?.website;
   if (filingWebsite && citation) {
-    return { url: filingWebsite, source: citation };
+    candidates.push({ url: filingWebsite, source: citation });
   }
   if (record.epostcard?.website) {
-    return { url: record.epostcard.website, source: record.epostcard.source };
+    candidates.push({
+      url: record.epostcard.website,
+      source: record.epostcard.source,
+    });
   }
-  return null;
+  return (
+    candidates.find((c) => toWebsiteUrl(c.url) !== null) ??
+    candidates[0] ??
+    null
+  );
 }

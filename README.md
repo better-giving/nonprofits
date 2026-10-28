@@ -1,6 +1,6 @@
 # nonprofits
 
-Look up any US tax-exempt organization by EIN or name: whether it's a 501(c)(3), its NTEE code, whether it is a public charity, a private foundation, or a private operating foundation, whether gifts to it are tax-deductible, whether its exemption was revoked, plus its mission, top programs, and finances from its latest Form 990, and its website. Every fact cites the IRS file it came from.
+Look up any US tax-exempt organization by EIN or name: whether it's a 501(c)(3), whether it's a public charity or a private foundation, its NTEE code, whether gifts to it are tax-deductible, whether its exemption was revoked, plus its mission, top programs, and finances from its latest Form 990, and its website. Every fact cites the IRS file it came from.
 
 **https://nonprofits.better.giving**, over REST or MCP.
 
@@ -33,10 +33,11 @@ One organization. `ein` is 9 digits, with or without the dash (`53-0196605`).
 | `ntee` | Raw NTEE code from the Business Master File, for example `P20`. `null` when that file has none |
 | `foundationStatus` | `public_charity`, `private_foundation`, or `private_operating_foundation`, from the Business Master File foundation code. `null` when the code is missing, when the code is 00, when it is in suspense, when it is unrecognized (including 25 when the subsection is not 03), or when the data build has no foundation column |
 | `foundationCode` | The raw foundation code from that file, or `null` |
-| `deductible` | Tri-state. `true`: listed in IRS Publication 78, so gifts are tax-deductible. `false`: Publication 78 is imported and the org is not listed. `null`: unknown, for example when Publication 78 has not been imported |
-| `revoked`, `revocationDate`, `reinstatementDate` | Exemption automatically revoked (and not reinstated since), with dates as `YYYY-MM-DD` |
-| `mission`, `activitySummary`, `website` | From its latest e-filed Form 990 or 990-EZ. `website` is the raw value |
-| `websiteUrl` | `website` as an `https` URL, or `null` when the raw value is not a web address |
+| `deductible` | `true`: listed in IRS Publication 78. `false`: Publication 78 is imported and the org is not listed. `null`: unknown, for example when Publication 78 has not been imported. Read from Publication 78 alone, so a revoked org can still be `true`: check `revoked` |
+| `revoked`, `revocationDate`, `reinstatementDate` | `revoked` is whether the exemption is revoked and not reinstated since (`null` until the auto-revocation list is imported). An org revoked and later reinstated (on the revocation list, or recognized again in the Business Master File) has `revoked` false and still returns its `revocationDate`. Dates are `YYYY-MM-DD` |
+| `mission`, `activitySummary` | From its latest e-filed Form 990 or 990-EZ |
+| `website` | The raw value from its latest e-filed return, or from its 990-N e-Postcard when the return has none or only the e-Postcard's is a web address |
+| `websiteUrl` | `website` as an `https` URL, or `null` when there is no website or it is not a web address |
 | `programs` | Up to 3 program services, highest expense first |
 | `finances` | `revenue`, `expenses`, `assets` (end of year) and `taxYear`, from its latest e-filed return |
 | `notes` | Why a fact is `null` |
@@ -50,7 +51,7 @@ Organizations whose names contain every word of `q` (2 to 200 characters, up to 
 curl "https://nonprofits.better.giving/v1/search?q=red%20cross&limit=5"
 ```
 
-Each result has `ein`, `name`, `city`, `state`, `is501c3`, `deductible`, `revoked`, `revocationDate` and their `provenance`. `deductible` is the same tri-state as on a lookup: `true`, `false`, or `null` when unknown (Publication 78 not imported). `revoked` is whether the exemption is revoked and not reinstated since (`null` until the auto-revocation list is imported). `revocationDate` is `YYYY-MM-DD`, or `null` when the list has no date; an org that was revoked and later reinstated (on the revocation list, or recognized again in the Business Master File) has `revoked` false and still returns that date. Look up an `ein` for the rest.
+Each result has `ein`, `name`, `city`, `state`, `is501c3`, `deductible`, `revoked`, `revocationDate` and their `provenance`. `deductible` is the same tri-state as on a lookup, and `revoked` and `revocationDate` mean what they do there; `revocationDate` is `null` when the list has no date. Look up an `ein` for the rest.
 
 ## MCP
 

@@ -6,23 +6,23 @@ import { FILING_SIZE_INDEX } from "./schema.ts";
  * EIN order, are ranked, and a broad word's best match can fall past them.
  * The service-wide daily ceilings in quota.ts are sized on it.
  */
-const MAX_CANDIDATES = 1_000;
+export const SEARCH_MAX_CANDIDATES = 1_000;
 
 /**
- * Of the first MAX_CANDIDATES matches in EIN order: orgs in Pub 78 first,
+ * Of the first SEARCH_MAX_CANDIDATES matches in EIN order: orgs in Pub 78 first,
  * then the rest of the current BMF, then orgs the BMF no longer lists; bm25
  * orders each tier. Every match holds every word, so
  * the tiers outweigh bm25's preference for short names: a dropped chapter
  * named AMERICAN RED CROSS would otherwise outscore the national org. At an
  * equal score the larger org leads, so UNITED WAY WORLDWIDE tops its chapters:
  * its latest filing's revenue, then its assets, a missing figure or filing
- * last; EIN breaks the ties left. `united way` ties across the whole candidate
- * window, and revenue sits after mission and activity_summary, so the primary
- * key would read both texts per candidate and time out on Turso. INDEXED BY
- * the covering size index reads only the figures; without it the unanalyzed
- * planner picks the primary key even when the index exists. On a database
- * built before the index, `searchSql(true)` fails with `no such index`; the
- * caller then runs `searchSql(false)`, which answers through the primary key.
+ * last; EIN breaks the ties left. A tie can span the whole candidate window
+ * (`united way`), so `indexed` joins filings INDEXED BY the covering
+ * FILING_SIZE_INDEX: with no sqlite_stat1 the planner picks the primary key,
+ * which reads both filing texts per candidate and times out on Turso.
+ * On a database built before the index, `searchSql(true)` fails with `no such
+ * index`; the caller then runs `searchSql(false)`, which answers through the
+ * primary key.
  */
 export function searchSql(indexed: boolean): string {
   const filings = indexed
@@ -32,7 +32,7 @@ export function searchSql(indexed: boolean): string {
 SELECT o.ein, o.name, o.city, o.state, o.subsection, o.ruling_date, o.bmf_run_id,
   o.in_pub78, o.revocation_date, o.reinstatement_date
 FROM (
-  SELECT rowid, rank AS score FROM orgs_fts WHERE orgs_fts MATCH ?1 LIMIT ${MAX_CANDIDATES}
+  SELECT rowid, rank AS score FROM orgs_fts WHERE orgs_fts MATCH ?1 LIMIT ${SEARCH_MAX_CANDIDATES}
 ) m
 JOIN orgs o ON o.ein = printf('%09d', m.rowid) AND o.name IS NOT NULL
 ${filings}

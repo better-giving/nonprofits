@@ -275,7 +275,9 @@ export async function lookupAs(
   const result = await answer(() =>
     lookupOrg(ein, {
       read: (valid) =>
-        readServed(caller, ({ client }) => readOrg(client, valid)),
+        readServed(caller, ({ client, foundationCode }) =>
+          readOrg(client, valid, foundationCode),
+        ),
     }),
   );
   emit({

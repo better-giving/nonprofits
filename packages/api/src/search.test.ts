@@ -1,9 +1,25 @@
-import type { Client, InStatement } from "@libsql/client";
-import type { OrgSearchResponse, SourceFile } from "@nonprofits/core";
+import { type Client, type InStatement, LibsqlError } from "@libsql/client";
+import type {
+  OrgResponse,
+  OrgSearchResponse,
+  SourceFile,
+} from "@nonprofits/core";
 import { FILING_SIZE_INDEX, FILING_SIZE_INDEX_DDL } from "@nonprofits/db";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { searchMatchPlan, searchNames } from "./org-searcher.ts";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  test,
+  vi,
+} from "vitest";
+import { searchNames } from "./org-searcher.ts";
 import { freshClient, type TestApi, testApi } from "./test-support.ts";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 /** The fixture's BMF file, which lists the Red Cross. */
 const BMF_DC: SourceFile = {
@@ -426,13 +442,155 @@ describe("GET /v1/search after a list reinstatement", () => {
   });
 });
 
+/** A later revocation import than the seeded one (run 3). */
+const REVOCATION_LATER: SourceFile = {
+  file: "https://apps.irs.gov/pub/epostcard/data-download-revocation-2.zip",
+  releasedAt: "2026-10-02T12:00:00.000Z",
+  fetchedAt: "2026-10-10T03:06:00.000Z",
+};
+
+describe("GET /v1/search and GET /v1/orgs/:ein", () => {
+  const revocationFacts = (org: {
+    revoked: boolean | null;
+    revocationDate: string | null;
+    provenance: {
+      revoked: SourceFile | null;
+      revocationDate: SourceFile | null;
+    };
+  }) => ({
+    revoked: org.revoked,
+    revocationDate: org.revocationDate,
+    provenance: {
+      revoked: org.provenance.revoked,
+      revocationDate: org.provenance.revocationDate,
+    },
+  });
+
+  /** Per EIN, from the seed's revocation and BMF ruling dates (rules.ts). */
+  const SEEDED_REVOCATION = {
+    // no revocation on record
+    "530196605": { revoked: false, revocationDate: null },
+    // revoked, still in the BMF
+    "201234567": { revoked: true, revocationDate: "2023-05-15" },
+    // BMF ruling date 2022-03 is after the 2021-05 revocation
+    "461234567": { revoked: false, revocationDate: "2021-05-17" },
+    // revoked, absent from the BMF
+    "311234567": { revoked: true, revocationDate: "2019-05-15" },
+  } as const;
+
+  test.each([
+    {
+      data: "the seeded data",
+      expected: SEEDED_REVOCATION,
+      fill: async () => {},
+    },
+    {
+      data: "a list reinstatement",
+      // reinstated 2024-06-01, after the 2023-05-15 revocation
+      expected: {
+        ...SEEDED_REVOCATION,
+        "201234567": { revoked: false, revocationDate: "2023-05-15" },
+      },
+      fill: async (data: Client) => {
+        await data.execute(
+          "UPDATE orgs SET reinstatement_date = '2024-06-01' WHERE ein = '201234567'",
+        );
+      },
+    },
+    {
+      data: "two revocation imports",
+      expected: SEEDED_REVOCATION,
+      fill: async (data: Client) => {
+        await data.execute({
+          sql: "INSERT INTO import_runs (id, source, file_url, released_at, fetched_at, row_count) VALUES (6, 'revocation', ?1, ?2, ?3, 3)",
+          args: [
+            REVOCATION_LATER.file,
+            REVOCATION_LATER.releasedAt,
+            REVOCATION_LATER.fetchedAt,
+          ],
+        });
+      },
+    },
+  ])(
+    "agree on revocation and cite the same files, on $data",
+    async ({ data, expected, fill }) => {
+      const both = await testApi({ fill });
+      try {
+        for (const [ein, q] of [
+          ["530196605", "red%20cross"],
+          ["201234567", "lapsed%20community"],
+          ["461234567", "restored%20neighborhood"],
+          ["311234567", "defunct%20arts"],
+        ] as const) {
+          const found = (await (
+            await both.app.request(`/v1/search?q=${q}`, {
+              headers: freshClient(),
+            })
+          ).json()) as OrgSearchResponse;
+          const match = found.results.find((result) => result.ein === ein);
+          const org = (await (
+            await both.app.request(`/v1/orgs/${ein}`, {
+              headers: freshClient(),
+            })
+          ).json()) as OrgResponse;
+
+          expect(org, ein).toMatchObject(expected[ein]);
+          expect(match, ein).toBeDefined();
+          if (match === undefined) continue;
+          expect(revocationFacts(match), ein).toStrictEqual(
+            revocationFacts(org),
+          );
+          if (data === "two revocation imports" && ein === "201234567") {
+            expect(match.provenance.revoked).toStrictEqual(REVOCATION_LATER);
+          }
+        }
+      } finally {
+        await both.dispose();
+      }
+    },
+  );
+});
+
+describe("GET /v1/search after a reinstatement and a later revocation", () => {
+  let again: TestApi;
+
+  beforeAll(async () => {
+    again = await testApi({
+      fill: async (data) => {
+        // reinstated in 2022, then revoked again on the seeded 2023-05-15
+        await data.execute(
+          "UPDATE orgs SET reinstatement_date = '2022-01-01' WHERE ein = '201234567'",
+        );
+      },
+    });
+  });
+
+  afterAll(async () => {
+    await again.dispose();
+  });
+
+  test("counts the org as revoked with the later revocation date", async () => {
+    const response = await again.app.request(
+      "/v1/search?q=lapsed%20community",
+      { headers: freshClient() },
+    );
+    const body = (await response.json()) as OrgSearchResponse;
+    expect(body.results[0]).toMatchObject({
+      ein: "201234567",
+      revoked: true,
+      revocationDate: "2023-05-15",
+      provenance: { revoked: REVOCATION, revocationDate: REVOCATION },
+    });
+  });
+});
+
 describe("GET /v1/search before the revocation list is imported", () => {
   let early: TestApi;
 
   beforeAll(async () => {
     early = await testApi({
       fill: async (data) => {
-        // the dropped org's name and address cite this run
+        // the dropped org's name and address cite the revocation run (id 3), deleted below
         await data.execute(
           "UPDATE orgs SET name_run_id = 1, address_run_id = 1 WHERE name_run_id = 3 OR address_run_id = 3",
         );
@@ -522,6 +680,32 @@ function capturingBatch(db: Client, calls: InStatement[][]): Client {
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
+}
+
+/** The match statement, the first of a batch `searchNames` sent. */
+function matchStatement(batch: InStatement[] | undefined) {
+  const sent = batch?.[0];
+  if (sent === undefined) {
+    throw new Error("searchNames passed nothing to batch");
+  }
+  return typeof sent === "string" ? { sql: sent } : sent;
+}
+
+function matchSql(batch: InStatement[] | undefined): string {
+  return matchStatement(batch).sql;
+}
+
+/** The `EXPLAIN QUERY PLAN` detail lines of the match statement in `batch`, joined. */
+async function matchPlan(
+  db: Client,
+  batch: InStatement[] | undefined,
+): Promise<string> {
+  const { sql, args } = matchStatement(batch);
+  const explained = await db.execute({
+    sql: `EXPLAIN QUERY PLAN ${sql}`,
+    ...(args === undefined ? {} : { args }),
+  });
+  return explained.rows.map((row) => String(row.detail)).join("\n");
 }
 
 /**
@@ -631,21 +815,12 @@ describe("GET /v1/search among names that score the same", () => {
       ["united", "way"],
       5,
     );
-    const sent = calls[0]?.[0];
-    if (sent === undefined) {
-      throw new Error("searchNames passed nothing to batch");
-    }
-    const sql = typeof sent === "string" ? sent : sent.sql;
-    const args = typeof sent === "string" ? undefined : sent.args;
-    const explained = await tied.dataDb.client.execute({
-      sql: `EXPLAIN QUERY PLAN ${sql}`,
-      ...(args === undefined ? {} : { args }),
-    });
-    const plan = explained.rows.map((row) => String(row.detail)).join("\n");
+    const plan = await matchPlan(tied.dataDb.client, calls[0]);
 
     expect(records[0]?.ein).toBe("131635294");
-    // A primary-key lookup would read mission and activity_summary for every
-    // candidate. The size index holds neither.
+    expect(calls).toHaveLength(1);
+    // a primary-key lookup would read mission and activity_summary for every
+    // candidate; the size index holds neither
     expect(plan).toContain("USING COVERING INDEX filings_size");
     expect(plan).not.toContain("sqlite_autoindex_filings");
     expect(plan).not.toMatch(/SCAN f\b/);
@@ -664,25 +839,96 @@ describe("GET /v1/search on a database built before the size index", () => {
     await legacy.dispose();
   });
 
-  test("still ranks United Way Worldwide, by the filings primary key", async () => {
+  test("still ranks United Way Worldwide", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
     const response = await legacy.app.request(
       "/v1/search?q=united%20way&limit=5",
       { headers: freshClient() },
     );
     const body = (await response.json()) as OrgSearchResponse;
     expect(response.status).toBe(200);
-    expect(body.results[0]?.ein).toBe("131635294");
     expect(body.results.map((result) => result.ein).slice(0, 3)).toEqual([
       "131635294",
       "060222222",
       "010211111",
     ]);
+  });
 
-    const plan = (
-      await searchMatchPlan(legacy.dataDb.client, ["united", "way"], 5)
-    ).join("\n");
-    expect(plan).toContain("sqlite_autoindex_filings");
-    expect(plan).not.toContain(FILING_SIZE_INDEX);
+  test("tries the size index, logs that it is missing, then reads the filings primary key", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const db = legacy.dataDb.client;
+    const calls: InStatement[][] = [];
+
+    const records = await searchNames(
+      capturingBatch(db, calls),
+      ["united", "way"],
+      5,
+    );
+
+    expect(records[0]?.ein).toBe("131635294");
+    expect(calls).toHaveLength(2);
+    expect(matchSql(calls[0])).toContain(`INDEXED BY ${FILING_SIZE_INDEX}`);
+    expect(matchSql(calls[1])).not.toContain(FILING_SIZE_INDEX);
+    expect(await matchPlan(db, calls[1])).toContain("sqlite_autoindex_filings");
+    expect(logged).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(logged.mock.calls[0]?.[0]))).toMatchObject({
+      event: "search_size_index_missing",
+      cause: expect.stringContaining(`no such index: ${FILING_SIZE_INDEX}`),
+    });
+  });
+});
+
+describe("GET /v1/search when the data database fails another way", () => {
+  let failing: TestApi;
+
+  beforeAll(async () => {
+    failing = await testApi({ fill: unitedWays });
+    await failing.dataDb.client.execute(
+      "ALTER TABLE import_runs RENAME TO import_runs_gone",
+    );
+  });
+
+  afterAll(async () => {
+    await failing.dispose();
+  });
+
+  test("rejects after one batch instead of retrying without the size index", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const calls: InStatement[][] = [];
+
+    await expect(
+      searchNames(
+        capturingBatch(failing.dataDb.client, calls),
+        ["united", "way"],
+        5,
+      ),
+    ).rejects.toThrow("no such table: import_runs");
+    expect(calls).toHaveLength(1);
+    expect(logged).not.toHaveBeenCalled();
+  });
+
+  test("rejects when a longer index name than the size index is missing", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const missing = `SQLITE_ERROR: no such index: ${FILING_SIZE_INDEX}_v2`;
+    const calls: InStatement[][] = [];
+    const db = new Proxy(failing.dataDb.client, {
+      get(target, property) {
+        if (property === "batch") {
+          return (statements: InStatement[]) => {
+            calls.push(statements);
+            return Promise.reject(new LibsqlError(missing, "SQLITE_ERROR"));
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+
+    await expect(searchNames(db, ["united", "way"], 5)).rejects.toThrow(
+      missing,
+    );
+    expect(calls).toHaveLength(1);
+    expect(logged).not.toHaveBeenCalled();
   });
 });
 
@@ -698,17 +944,28 @@ describe("GET /v1/search after a legacy database gains the size index", () => {
   });
 
   test("returns United Way Worldwide without the index, then searches through it once created", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
     const db = regained.dataDb.client;
     await db.execute(`DROP INDEX ${FILING_SIZE_INDEX}`);
-    const without = await searchNames(db, ["united", "way"], 5);
+    const before: InStatement[][] = [];
+    const without = await searchNames(
+      capturingBatch(db, before),
+      ["united", "way"],
+      5,
+    );
     expect(without[0]?.ein).toBe("131635294");
+    expect(before).toHaveLength(2);
 
     await db.execute(FILING_SIZE_INDEX_DDL);
-    const calls: InStatement[][] = [];
-    await searchNames(capturingBatch(db, calls), ["united", "way"], 5);
-    const sent = calls.at(-1)?.[0];
-    const sql = typeof sent === "string" ? sent : sent?.sql;
-    expect(sql).toContain(`INDEXED BY ${FILING_SIZE_INDEX}`);
+    const after: InStatement[][] = [];
+    const indexed = await searchNames(
+      capturingBatch(db, after),
+      ["united", "way"],
+      5,
+    );
+    expect(indexed[0]?.ein).toBe("131635294");
+    expect(after).toHaveLength(1);
+    expect(matchSql(after[0])).toContain(`INDEXED BY ${FILING_SIZE_INDEX}`);
   });
 });
 
@@ -717,11 +974,10 @@ const ALIKE_EINS = Array.from({ length: 1_001 }, (_, i) =>
   String(800_000_001 + i),
 );
 
-/** A filing body large enough that ranking it is the expensive work the cap skips. */
+/** A mission far larger than the figures the tie-break reads, on the filing past the candidate cap. */
 const FAT_MISSION = "M".repeat(64_000);
 
 async function alikeNames(data: Client) {
-  // the 1,001st, past the candidate cap
   const pastTheCap = ALIKE_EINS[1_000];
   if (pastTheCap === undefined) {
     throw new Error("the 1,001st alike EIN is missing");
@@ -738,8 +994,8 @@ async function alikeNames(data: Client) {
           args: [ein],
         },
       ]),
-      // largest filing, and a mission the tie-break must not have to read:
-      // revenue ranking before the cap would return this org first
+      // largest filing: revenue ranking before the cap would return this org
+      // first
       {
         sql: "INSERT INTO filings (ein, object_id, form_type, tax_period, tax_year, mission, activity_summary, total_revenue, total_assets_eoy, run_id) VALUES (?1, ?1, '990', '2025-06', 2024, ?2, ?2, 9000000000, 9000000000, 5)",
         args: [pastTheCap, FAT_MISSION],

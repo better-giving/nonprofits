@@ -6,6 +6,7 @@ import {
 } from "@modelcontextprotocol/client";
 import type { OrgSearchResponse } from "@nonprofits/core";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { z } from "zod";
 import {
   freshClient,
   insertKey,
@@ -15,6 +16,8 @@ import {
 } from "./test-support.ts";
 
 const MINUTE_MS = 60_000;
+/** Keyless requests an IP gets a UTC day. */
+const DAILY = 25;
 
 let api: TestApi;
 const clients: Client[] = [];
@@ -403,6 +406,56 @@ describe("/mcp with a key", () => {
     },
   );
 
+  test.each([
+    // the seed's own code
+    { code: "04", phrase: "Foundation: private foundation (04)." },
+    { code: "03", phrase: "Foundation: private operating foundation (03)." },
+  ])(
+    "lookup_nonprofit renders foundation code $code by its status",
+    async ({ code, phrase }) => {
+      await start({
+        fill: async (data) => {
+          await data.execute({
+            sql: "UPDATE orgs SET foundation_code = ? WHERE ein = '136009999'",
+            args: [code],
+          });
+        },
+      });
+      const client = await connect(await keyed());
+
+      const result = await client.callTool({
+        name: "lookup_nonprofit",
+        arguments: { ein: "136009999" },
+      });
+
+      const rendered = result.content[0];
+      if (rendered?.type !== "text") throw new Error("lookup text is missing");
+      expect(rendered.text.split("\n")).toContain(`NTEE: T20. ${phrase}`);
+    },
+  );
+
+  test("lookup_nonprofit on a data build without foundation codes says the status is unknown, not none", async () => {
+    await start({
+      fill: async (data) => {
+        await data.execute("ALTER TABLE orgs DROP COLUMN foundation_code");
+      },
+    });
+    const client = await connect(await keyed());
+
+    const result = await client.callTool({
+      name: "lookup_nonprofit",
+      arguments: { ein: "530196605" },
+    });
+
+    const rendered = result.content[0];
+    if (rendered?.type !== "text") throw new Error("lookup text is missing");
+    expect(rendered.text.split("\n")).toContain(
+      "NTEE: P20. Foundation: unknown (not in this data build).",
+    );
+    expect(rendered.text).not.toContain("none on record (");
+    expect(rendered.text).not.toContain("Foundation: none on record");
+  });
+
   test("lookup_nonprofit renders foundation code 00 as no status and keeps the code", async () => {
     await start();
     const client = await connect(await keyed());
@@ -429,6 +482,13 @@ describe("/mcp with a key", () => {
         "2. RED CROSS CIVITANS, EIN 581771391",
       ],
     },
+    {
+      query: "lapsed community",
+      text: [
+        'Matches for "lapsed community", best first:',
+        "1. LAPSED COMMUNITY THEATER INC, EIN 201234567, DAYTON, OH (revoked)",
+      ],
+    },
     { query: "zzzz qqqq", text: ['No matches for "zzzz qqqq".'] },
   ])(
     "search_nonprofits tells the matches for $query in text, then the JSON",
@@ -452,6 +512,61 @@ describe("/mcp with a key", () => {
       ]);
     },
   );
+
+  test("before Pub 78 and the revocation list are imported, lookup and search answer null deductible and revoked, matching their output schemas", async () => {
+    await start({
+      fill: async (data) => {
+        // the dropped org's name and address cite the revocation run (id 3), deleted below
+        await data.execute(
+          "UPDATE orgs SET name_run_id = 1, address_run_id = 1 WHERE name_run_id = 3 OR address_run_id = 3",
+        );
+        await data.execute(
+          "DELETE FROM import_runs WHERE source IN ('pub78', 'revocation')",
+        );
+      },
+    });
+    const client = await connect(await keyed());
+    const { tools } = await client.listTools();
+    const outputOf = (name: string) =>
+      z.fromJSONSchema(
+        // the SDK types `$schema` as any string, Zod as the drafts it reads
+        (tools.find((listed) => listed.name === name)?.outputSchema ??
+          false) as Parameters<typeof z.fromJSONSchema>[0],
+      );
+
+    const lookup = await client.callTool({
+      name: "lookup_nonprofit",
+      arguments: { ein: "530196605" },
+    });
+    const search = await client.callTool({
+      name: "search_nonprofits",
+      arguments: { query: "red cross" },
+    });
+
+    expect(lookup.isError).toBeFalsy();
+    expect(lookup.structuredContent).toMatchObject({
+      deductible: null,
+      revoked: null,
+      revocationDate: null,
+    });
+    expect(
+      outputOf("lookup_nonprofit").safeParse(lookup.structuredContent).error,
+    ).toBeUndefined();
+    expect(search.isError).toBeFalsy();
+    expect(search.structuredContent).toMatchObject({
+      results: [
+        {
+          ein: "530196605",
+          deductible: null,
+          revoked: null,
+          revocationDate: null,
+        },
+      ],
+    });
+    expect(
+      outputOf("search_nonprofits").safeParse(search.structuredContent).error,
+    ).toBeUndefined();
+  });
 
   test.each([
     {
@@ -591,24 +706,41 @@ describe("/mcp without a key", () => {
     ]);
   });
 
-  test("lookup and search descriptions and output schemas say deductible is true, false, or null when unknown", async () => {
+  test("lookup and search descriptions and output schemas say deductible is true, false, or null when unknown, and when an org counts as revoked", async () => {
     await start();
     const client = await connect(freshClient());
     const { tools } = await client.listTools();
     const deductible =
       "null when unknown (for example, Publication 78 has not been imported)";
 
+    const revoked = "a revoked-then-reinstated organization is false";
+    const revocationDate = "Still returned after a later reinstatement.";
+
     for (const name of ["lookup_nonprofit", "search_nonprofits"]) {
       const tool = tools.find((listed) => listed.name === name);
+      const schema = JSON.stringify(tool?.outputSchema);
       expect(tool?.description, name).toContain(deductible);
-      expect(JSON.stringify(tool?.outputSchema), name).toContain(deductible);
+      expect(schema, name).toContain(deductible);
+      expect(tool?.description, name).toContain(revoked);
+      expect(schema, name).toContain(revoked);
+      expect(tool?.description, name).toContain(revocationDate);
+      expect(schema, name).toContain(revocationDate);
     }
-    const search = tools.find((listed) => listed.name === "search_nonprofits");
-    expect(search?.description).toContain("revoked-then-reinstated");
-    expect(JSON.stringify(search?.outputSchema)).toContain("revocationDate");
     const lookup = tools.find((listed) => listed.name === "lookup_nonprofit");
     expect(lookup?.description).toContain("websiteUrl");
     expect(lookup?.description).toContain("foundationStatus");
+  });
+
+  test("lookup description and output schema say website falls back to the 990-N e-Postcard's", async () => {
+    await start();
+    const client = await connect(freshClient());
+    const { tools } = await client.listTools();
+    const lookup = tools.find((listed) => listed.name === "lookup_nonprofit");
+    const websiteSource =
+      "or from its 990-N e-Postcard when the 990 has none or only the e-Postcard's is a web address";
+
+    expect(lookup?.description).toContain(websiteSource);
+    expect(JSON.stringify(lookup?.outputSchema)).toContain(websiteSource);
   });
 
   test("lookup description and output schema say foundationStatus is null for a missing, 00, suspense, or unrecognized code", async () => {
@@ -710,7 +842,7 @@ describe("/mcp without a key", () => {
     api.clock.set("2026-10-05T22:00:00Z");
     const ip = freshClient();
     const call = { name: "lookup_nonprofit", arguments: { ein: "530196605" } };
-    for (let i = 1; i <= 22; i++) {
+    for (let i = 1; i <= DAILY - 3; i++) {
       await restJson("/v1/orgs/530196605", ip);
       api.clock.advance(MINUTE_MS);
     }

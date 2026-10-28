@@ -1,6 +1,8 @@
 export {
   createDataDatabase,
+  DATA_META_SQL,
   type DataBuild,
+  dataBuildOf,
   finishDataDatabase,
   holdsBuild,
   readDataCounts,
@@ -15,7 +17,11 @@ export {
   type ImportSource,
   ORGS_KEY_INDEX,
 } from "./schema.ts";
-export { matchExpression, searchSql } from "./search-sql.ts";
+export {
+  matchExpression,
+  SEARCH_MAX_CANDIDATES,
+  searchSql,
+} from "./search-sql.ts";
 export {
   NEVER_BUILT,
   readServedDatabase,

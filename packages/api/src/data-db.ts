@@ -1,11 +1,36 @@
 import type { Client } from "@libsql/client";
-import { holdsBuild, readDataMeta, readServedDatabase } from "@nonprofits/db";
+import {
+  DATA_META_SQL,
+  dataBuildOf,
+  holdsBuild,
+  readServedDatabase,
+} from "@nonprofits/db";
 import { logFailure } from "./log.ts";
 
 /** The data database a request reads, and the build it holds. */
 export interface ServedData {
   client: Client;
   buildId: string;
+  /** `orgs` has a `foundation_code` column: a build from before it has none. */
+  foundationCode: boolean;
+}
+
+const FOUNDATION_CODE_COLUMN_SQL =
+  "SELECT 1 FROM pragma_table_info('orgs') WHERE name = 'foundation_code'";
+
+/**
+ * A data database's build and whether `orgs` has a `foundation_code` column,
+ * read in one round trip from one snapshot.
+ */
+async function readBuildSchema(client: Client) {
+  const [meta, column] = await client.batch(
+    [DATA_META_SQL, FOUNDATION_CODE_COLUMN_SQL],
+    "read",
+  );
+  if (meta === undefined || column === undefined) {
+    throw new Error("a read batch of two statements returned fewer results");
+  }
+  return { meta: dataBuildOf(meta), foundationCode: column.rows.length > 0 };
 }
 
 /** The pointer names no database yet: the first import hasn't switched to one. */
@@ -50,16 +75,25 @@ export function servedDataResolver(
       return known;
     }
     const client = openDataDb(database.url);
+    let foundationCode: boolean;
     try {
-      if (!holdsBuild(buildId, await readDataMeta(client))) {
+      const schema = await readBuildSchema(client);
+      if (!holdsBuild(buildId, schema.meta)) {
         throw new Error(`${database.name} does not hold build ${buildId}`);
       }
+      foundationCode = schema.foundationCode;
     } catch (error) {
       client.close();
       throw error;
     }
     // the client it replaces stays open: requests already reading it finish
-    known = { client, buildId, url: database.url, readAt: nowMs };
+    known = {
+      client,
+      buildId,
+      foundationCode,
+      url: database.url,
+      readAt: nowMs,
+    };
     return known;
   }
 

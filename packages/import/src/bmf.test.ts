@@ -107,6 +107,7 @@ beforeAll(async () => {
   );
   odd = editRow(odd, "200644142", (f) => {
     f[1] = "STRATEGIC SOLUTIONS\0 NETWORK INC";
+    f[13] = "  "; // FOUNDATION, blank
   });
   odd = editRow(odd, "201096061", (f) => {
     f[11] = "20109";
@@ -403,6 +404,13 @@ describe("importBmf", { timeout: 60_000 }, () => {
     test("strips NUL bytes from text", async () => {
       const rows = await query("SELECT name FROM orgs WHERE ein = '200644142'");
       expect(rows).toStrictEqual([{ name: "STRATEGIC SOLUTIONS NETWORK INC" }]);
+    });
+
+    test("stores a blank foundation code as null", async () => {
+      const rows = await query(
+        "SELECT foundation_code FROM orgs WHERE ein = '200644142'",
+      );
+      expect(rows).toStrictEqual([{ foundation_code: null }]);
     });
 
     test("stores a ruling that isn't six digits as null", async () => {

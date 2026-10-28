@@ -19,6 +19,8 @@ afterEach(async () => {
 });
 
 const MINUTE_MS = 60_000;
+/** Keyless requests an IP gets a UTC day. */
+const DAILY = 25;
 
 function lookupFrom(headers: Record<string, string>, ein = "530196605") {
   return api.app.request(`/v1/orgs/${ein}`, { headers });
@@ -30,7 +32,7 @@ describe("keyless quota", () => {
   test("an IP gets 25 requests a UTC day; the 26th is 429 with Retry-After to UTC midnight, and another IP is still served", async () => {
     await start();
     api.clock.set("2026-10-05T22:00:00Z");
-    for (let i = 1; i <= 25; i++) {
+    for (let i = 1; i <= DAILY; i++) {
       const response = await lookupFrom(from("203.0.113.10"));
       expect(response.status, `request ${i}`).toBe(200);
       api.clock.advance(MINUTE_MS);
@@ -55,7 +57,7 @@ describe("keyless quota", () => {
   test("the next UTC day opens an IP's quota again", async () => {
     await start();
     api.clock.set("2026-10-05T23:00:00Z");
-    for (let i = 1; i <= 25; i++) {
+    for (let i = 1; i <= DAILY; i++) {
       await lookupFrom(from("203.0.113.12"));
       api.clock.advance(MINUTE_MS);
     }
@@ -87,12 +89,12 @@ describe("keyless quota", () => {
 
   test("a request refused by the per-minute limiter isn't counted toward the day", async () => {
     await start();
-    for (let i = 1; i <= 25; i++) {
+    for (let i = 1; i <= DAILY; i++) {
       expect((await lookupFrom(from("203.0.113.32"))).status).toBe(200);
       expect((await lookupFrom(from("203.0.113.32"))).status).toBe(429);
       api.clock.advance(MINUTE_MS);
     }
-    expect(await countedPerClient()).toStrictEqual([25]);
+    expect(await countedPerClient()).toStrictEqual([DAILY]);
   });
 
   test("a client-set IP header beside the platform's is ignored: the request counts as the platform's IP", async () => {
@@ -143,7 +145,7 @@ describe("keyless quota", () => {
   test("search and lookup count against the same per-IP day", async () => {
     await start();
     const ip = from("203.0.113.60");
-    for (let i = 1; i <= 23; i++) {
+    for (let i = 1; i <= DAILY - 2; i++) {
       expect((await lookupFrom(ip)).status).toBe(200);
       api.clock.advance(MINUTE_MS);
     }
@@ -154,9 +156,9 @@ describe("keyless quota", () => {
     expect((await searchRed()).status).toBe(200);
     api.clock.advance(MINUTE_MS);
 
-    const sixth = await searchRed();
+    const over = await searchRed();
 
-    expect(await sixth.json()).toMatchObject({
+    expect(await over.json()).toMatchObject({
       code: "daily_quota_exceeded",
     });
   });

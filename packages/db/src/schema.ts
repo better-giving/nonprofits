@@ -23,11 +23,7 @@ export const DATA_TABLES = [
 ] as const;
 export type DataTable = (typeof DATA_TABLES)[number];
 
-/**
- * Covering index of the figures name search ranks a tie by. Revenue and assets
- * follow `mission` and `activity_summary` on the filing row, so the primary
- * key lookup reads both texts; this index holds neither.
- */
+/** Covering index of the filing figures name search ranks a tie by; why it exists is on its DDL in `dataTablesDdl`. */
 export const FILING_SIZE_INDEX = "filings_size";
 
 /** The `CREATE INDEX` statement `dataTablesDdl` runs for `FILING_SIZE_INDEX`. */
@@ -194,8 +190,9 @@ CREATE TABLE filings (
 -- Search orders tied names by revenue, then assets. Those columns follow
 -- mission and activity_summary, so a primary-key lookup reads both texts for
 -- every candidate: a tie across a thousand United Ways times out on Turso.
--- Covering, so that lookup reads neither text. Search names it with
--- INDEXED BY; with no sqlite_stat1 the planner prefers the primary key.
+-- This index covers the figures, so ranking reads neither text. With no
+-- sqlite_stat1 the planner still prefers the primary key, so search names
+-- this index with INDEXED BY.
 ${FILING_SIZE_INDEX_DDL}
 
 -- Replacing a filing's object_id fails while its old programs remain.
