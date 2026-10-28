@@ -34,9 +34,9 @@ How to run the API, mint a local key, or build a month of IRS data: [CONTRIBUTIN
 | `@nonprofits/import` | Monthly IRS bulk-file job and `.github/workflows/import.yml` | `db` |
 | `@nonprofits/cli` | API-key admin. Talks to the api over HTTP | In tests only, `@nonprofits/api/test-support` |
 
-A workspace package missing from a package's `dependencies` does not resolve there, so `pnpm typecheck` enforces the import column. Nothing checks that `core` stays free of I/O, SQL, and framework code.
+A workspace package missing from a package's `dependencies` and `devDependencies` does not resolve there, so `pnpm typecheck` enforces the import column, except `cli`'s "in tests only": `@nonprofits/api` is a `cli` devDependency, so `cli`'s `src` could import it too. Nothing checks that `core` stays free of I/O, SQL, and framework code.
 
-A new variable the api reads goes in `packages/api/.env.example`, as a `replace-with-` placeholder. A test runs only if its path matches `packages/*/{src,test}/**/*.test.ts` (`vitest.config.ts`).
+A new variable the api reads goes in `PRODUCTION_ENV` (`packages/api/src/production.ts`) and in `packages/api/.env.example`, a `required` or `secret` one as a `replace-with-` placeholder and an `optional` one empty; `packages/api/src/deploy.test.ts` fails when the two lists differ. A test runs only if its path matches `packages/*/{src,test}/**/*.test.ts` (`vitest.config.ts`).
 
 ## Conventions
 
@@ -45,7 +45,7 @@ A new variable the api reads goes in `packages/api/.env.example`, as a `replace-
 
 ## Never
 
-- Never commit a secret, token, credential, or production environment value. This repository is public. Those values live in Vercel environment variables, GitHub Actions secrets, or a gitignored `.env.*` file. `.gitignore` is the only check, and it covers `.env` and `.env.*` files alone.
+- Never commit a secret, token, credential, or production environment value. This repository is public. Those values live in Vercel environment variables, GitHub Actions secrets, or a gitignored `.env.*` file. `.gitignore` is the only check, and it covers `.env` and `.env.*` files alone, `.env.example` excepted.
 - Never write a secret to a log. When a test needs a secret-shaped value, use a dummy such as `test-only-better-auth-secret-0123456789abcdef`.
 - Never weaken a test so a change goes green: do not skip it, delete it, loosen the expected value, stub out the behavior it guards, or raise a timeout to hide a failure. Fix the code the test is about.
 - Never point tests, fixtures, or the agent install at production Turso, Vercel, or GitHub credentials.
