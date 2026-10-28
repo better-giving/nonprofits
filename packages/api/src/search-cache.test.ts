@@ -4,7 +4,7 @@ import { switchServedDatabase } from "@nonprofits/db";
 import { dataDbFixture, type LocalDb } from "@nonprofits/db/fixture";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { POINTER_TTL_MS } from "./data-db.ts";
-import { vercelSearchCache } from "./search-cache.ts";
+import { memorySearchCache, vercelSearchCache } from "./search-cache.ts";
 import {
   freshClient,
   insertKey,
@@ -143,6 +143,37 @@ describe("a repeated search", () => {
     expect((await fewer.json()) as OrgSearchResponse).toMatchObject({
       limit: 1,
       results: [{ ein: "530196605" }],
+    });
+  });
+});
+
+describe("a search cached by the release before revocation in search", () => {
+  test("is not served: the search ranks again and answers revoked", async () => {
+    const cache = memorySearchCache(() => new Date());
+    // that release's key (record version 2) and record, which had no `revocation`
+    await cache.set(
+      JSON.stringify([2, "20260910T030000Z", 10, ["red", "cross"]]),
+      [
+        {
+          ein: "530196605",
+          name: "AMERICAN NATIONAL RED CROSS",
+          city: "WASHINGTON",
+          state: "DC",
+          bmf: null,
+          pub78: null,
+        },
+      ],
+      { ttl: 3600 },
+    );
+    await start({ searchCache: cache });
+    const { key } = await insertKey(api);
+
+    const response = await searchAs(`Bearer ${key}`);
+
+    expect(response.status).toBe(200);
+    expect(searchesRun).toBe(1);
+    expect((await response.json()) as OrgSearchResponse).toMatchObject({
+      results: [{ ein: "530196605", is501c3: true, revoked: false }],
     });
   });
 });

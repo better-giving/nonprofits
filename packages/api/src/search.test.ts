@@ -1,5 +1,9 @@
 import type { Client, InStatement } from "@libsql/client";
-import type { OrgSearchResponse, SourceFile } from "@nonprofits/core";
+import type {
+  OrgResponse,
+  OrgSearchResponse,
+  SourceFile,
+} from "@nonprofits/core";
 import { FILING_SIZE_INDEX, FILING_SIZE_INDEX_DDL } from "@nonprofits/db";
 import {
   afterAll,
@@ -434,13 +438,132 @@ describe("GET /v1/search after a list reinstatement", () => {
   });
 });
 
+/** A later revocation import than the seeded one (run 3). */
+const REVOCATION_LATER: SourceFile = {
+  file: "https://apps.irs.gov/pub/epostcard/data-download-revocation-2.zip",
+  releasedAt: "2026-10-02T12:00:00.000Z",
+  fetchedAt: "2026-10-10T03:06:00.000Z",
+};
+
+describe("GET /v1/search and GET /v1/orgs/:ein", () => {
+  const revocationFacts = (org: {
+    revoked: boolean | null;
+    revocationDate: string | null;
+    provenance: {
+      revoked: SourceFile | null;
+      revocationDate: SourceFile | null;
+    };
+  }) => ({
+    revoked: org.revoked,
+    revocationDate: org.revocationDate,
+    provenance: {
+      revoked: org.provenance.revoked,
+      revocationDate: org.provenance.revocationDate,
+    },
+  });
+
+  test.each([
+    { data: "the seeded data", fill: async () => {} },
+    {
+      data: "a list reinstatement",
+      fill: async (data: Client) => {
+        await data.execute(
+          "UPDATE orgs SET reinstatement_date = '2024-06-01' WHERE ein = '201234567'",
+        );
+      },
+    },
+    {
+      data: "two revocation imports",
+      fill: async (data: Client) => {
+        await data.execute({
+          sql: "INSERT INTO import_runs (id, source, file_url, released_at, fetched_at, row_count) VALUES (6, 'revocation', ?1, ?2, ?3, 3)",
+          args: [
+            REVOCATION_LATER.file,
+            REVOCATION_LATER.releasedAt,
+            REVOCATION_LATER.fetchedAt,
+          ],
+        });
+      },
+    },
+  ])(
+    "agree on revocation and cite the same files, on $data",
+    async ({ data, fill }) => {
+      const both = await testApi({ fill });
+      try {
+        for (const [ein, q] of [
+          ["530196605", "red%20cross"],
+          ["201234567", "lapsed%20community"],
+          ["461234567", "restored%20neighborhood"],
+          ["311234567", "defunct%20arts"],
+        ] as const) {
+          const found = (await (
+            await both.app.request(`/v1/search?q=${q}`, {
+              headers: freshClient(),
+            })
+          ).json()) as OrgSearchResponse;
+          const match = found.results.find((result) => result.ein === ein);
+          const org = (await (
+            await both.app.request(`/v1/orgs/${ein}`, {
+              headers: freshClient(),
+            })
+          ).json()) as OrgResponse;
+
+          expect(match, ein).toBeDefined();
+          if (match === undefined) continue;
+          expect(revocationFacts(match), ein).toStrictEqual(
+            revocationFacts(org),
+          );
+          if (data === "two revocation imports" && ein === "201234567") {
+            expect(match.provenance.revoked).toStrictEqual(REVOCATION_LATER);
+          }
+        }
+      } finally {
+        await both.dispose();
+      }
+    },
+  );
+});
+
+describe("GET /v1/search after a reinstatement and a later revocation", () => {
+  let again: TestApi;
+
+  beforeAll(async () => {
+    again = await testApi({
+      fill: async (data) => {
+        // reinstated in 2022, then revoked again on the seeded 2023-05-15
+        await data.execute(
+          "UPDATE orgs SET reinstatement_date = '2022-01-01' WHERE ein = '201234567'",
+        );
+      },
+    });
+  });
+
+  afterAll(async () => {
+    await again.dispose();
+  });
+
+  test("counts the org as revoked with the later revocation date", async () => {
+    const response = await again.app.request(
+      "/v1/search?q=lapsed%20community",
+      { headers: freshClient() },
+    );
+    const body = (await response.json()) as OrgSearchResponse;
+    expect(body.results[0]).toMatchObject({
+      ein: "201234567",
+      revoked: true,
+      revocationDate: "2023-05-15",
+      provenance: { revoked: REVOCATION, revocationDate: REVOCATION },
+    });
+  });
+});
+
 describe("GET /v1/search before the revocation list is imported", () => {
   let early: TestApi;
 
   beforeAll(async () => {
     early = await testApi({
       fill: async (data) => {
-        // the dropped org's name and address cite this run
+        // the dropped org's name and address cite the revocation run (id 3), deleted below
         await data.execute(
           "UPDATE orgs SET name_run_id = 1, address_run_id = 1 WHERE name_run_id = 3 OR address_run_id = 3",
         );

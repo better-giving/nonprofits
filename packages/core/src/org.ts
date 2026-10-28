@@ -81,9 +81,9 @@ export interface OrgResponse {
   /** Raw BMF foundation code, for example `15`. Null when that code is absent. */
   foundationCode: string | null;
   /**
-   * Tri-state. `true` when listed in IRS Publication 78, so gifts are
-   * tax-deductible. `false` when Pub 78 is imported and the org is not listed.
-   * `null` when unknown, for example when Pub 78 has not been imported.
+   * `true` when listed in IRS Publication 78. `false` when Pub 78 is imported
+   * and the org is not listed. `null` when unknown, for example when Pub 78 has
+   * not been imported.
    */
   deductible: boolean | null;
   /** Revoked and not reinstated since; null until the revocation list is imported. */

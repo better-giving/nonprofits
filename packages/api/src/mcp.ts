@@ -25,15 +25,22 @@ import { refusalBody, refuse } from "./refusal.ts";
 /** Far above any tool call's arguments (a query is at most 200 characters). */
 const MAX_BODY_BYTES = 16 * 1024;
 
-/** Shared by the lookup and search tool descriptions and their output schemas. */
 const DEDUCTIBLE_TRISTATE =
-  "Tri-state: true when the organization is listed in IRS Publication 78, false when Publication 78 has been imported and the organization is not listed, and null when unknown (for example, Publication 78 has not been imported).";
+  "True when the organization is listed in IRS Publication 78, false when Publication 78 has been imported and the organization is not listed, and null when unknown (for example, Publication 78 has not been imported). It is read from Publication 78 alone, so a revoked organization can still be true; check `revoked`.";
+
+const REVOKED_TRISTATE =
+  "True only when the exemption was revoked and has not been reinstated since, on the auto-revocation list or by a later Business Master File ruling month; a revoked-then-reinstated organization is false. Null until the auto-revocation list is imported.";
+
+const REVOCATION_DATE =
+  "YYYY-MM-DD from the auto-revocation list, or null when that list has no date. Still returned after a later reinstatement.";
 
 const LOOKUP_DESCRIPTION = `Look up a US tax-exempt organization by its EIN (Employer Identification Number: the 9-digit number the IRS identifies an organization by). Pass it as a string, with or without the dash: "530196605" or "53-0196605".
 
 Returns the organization's name, address, 501(c)(3) status, NTEE code, foundation status, the raw foundation code, whether gifts to it are tax-deductible (IRS Pub 78), revocation status, mission, activity summary, top programs, latest finances, website and an https website URL. Every fact is read from IRS bulk data files, and \`provenance\` names the IRS file (and, for facts from a 990, the filing and tax year) each fact came from.
 
-\`deductible\` is ${DEDUCTIBLE_TRISTATE}
+\`deductible\` is tri-state. ${DEDUCTIBLE_TRISTATE}
+
+\`revoked\` is tri-state. ${REVOKED_TRISTATE} \`revocationDate\`: ${REVOCATION_DATE}
 
 \`ntee\` is the raw NTEE code from the IRS Business Master File, for example "P20", or null when that file has none. \`foundationStatus\` is "public_charity", "private_foundation", or "private_operating_foundation", from the Business Master File foundation code. It is null when the code is missing, when the code is 00, when it is in suspense, when it is unrecognized (including 25 when the subsection is not 03), or when the data build has no foundation column. \`foundationCode\` is that raw code, or null. \`website\` is the raw value. \`websiteUrl\` is that value as an https URL, or null when it is not a web address. \`notes\` says which of these is null, and why.
 
@@ -43,7 +50,7 @@ Errors: \`invalid_ein\` for an EIN that isn't 9 digits, \`not_found\` when no or
 
 const SEARCH_DESCRIPTION = `Find US tax-exempt organizations by name. Results are ranked by relevance to the words, best match first. Each match has its EIN, name, city, state, 501(c)(3) status, \`deductible\`, \`revoked\` and \`revocationDate\`. Pass an EIN to lookup_nonprofit for the full record.
 
-\`deductible\` is ${DEDUCTIBLE_TRISTATE} \`revoked\` is true only when the exemption was revoked and has not been reinstated since, on the auto-revocation list or by a later Business Master File ruling month; a revoked-then-reinstated organization is not revoked. \`revocationDate\` is \`YYYY-MM-DD\` when the list has a date, and is still returned after a later reinstatement. \`revoked\` is null until that list is imported.
+\`deductible\` is tri-state. ${DEDUCTIBLE_TRISTATE} \`revoked\` is tri-state. ${REVOKED_TRISTATE} \`revocationDate\`: ${REVOCATION_DATE}
 
 \`query\` is a few distinctive words of the name, 2 to 200 characters, e.g. "red cross"; punctuation is ignored and at most 8 words are used. \`limit\` is how many matches to return: a whole number from 1 to 50, default 10, and above 50 is capped at 50.
 
@@ -103,7 +110,7 @@ function renderSearch(found: OrgSearchResponse): string {
   if (found.results.length === 0) return `No matches for "${found.query}".`;
   const matches = found.results.map((match, i) => {
     const where = place(match);
-    return `${i + 1}. ${match.name}, EIN ${match.ein}${where === "" ? "" : `, ${where}`}`;
+    return `${i + 1}. ${match.name}, EIN ${match.ein}${where === "" ? "" : `, ${where}`}${match.revoked === true ? " (revoked)" : ""}`;
   });
   return [`Matches for "${found.query}", best first:`, ...matches].join("\n");
 }
@@ -146,8 +153,9 @@ const filingCitation = sourceFile.extend({
   formType: z.enum(["990", "990-EZ", "990-PF"]),
 });
 
-/** `deductible` on both tools: true, false, or null when unknown. */
 const deductible = z.boolean().nullable().describe(DEDUCTIBLE_TRISTATE);
+const revoked = z.boolean().nullable().describe(REVOKED_TRISTATE);
+const revocationDate = z.string().nullable().describe(REVOCATION_DATE);
 
 const LOOKUP_OUTPUT = z.object({
   ein: z.string(),
@@ -180,8 +188,8 @@ const LOOKUP_OUTPUT = z.object({
     .nullable()
     .describe("Raw Business Master File foundation code, or null."),
   deductible,
-  revoked: z.boolean().nullable(),
-  revocationDate: z.string().nullable(),
+  revoked,
+  revocationDate,
   reinstatementDate: z.string().nullable(),
   mission: z.string().nullable(),
   activitySummary: z.string().nullable(),
@@ -227,7 +235,7 @@ const LOOKUP_OUTPUT = z.object({
     website: z.union([filingCitation, sourceFile]).nullable(),
     websiteUrl: z.union([filingCitation, sourceFile]).nullable(),
   }),
-});
+}) satisfies z.ZodType<OrgResponse>;
 
 const SEARCH_OUTPUT = z.object({
   query: z.string(),
@@ -240,18 +248,8 @@ const SEARCH_OUTPUT = z.object({
       state: z.string().nullable(),
       is501c3: z.boolean().nullable(),
       deductible,
-      revoked: z
-        .boolean()
-        .nullable()
-        .describe(
-          "True only when the exemption was revoked and has not been reinstated since, on the auto-revocation list or by a later Business Master File ruling month. False when it was not revoked or was later reinstated. Null until the auto-revocation list is imported.",
-        ),
-      revocationDate: z
-        .string()
-        .nullable()
-        .describe(
-          "YYYY-MM-DD from the auto-revocation list, or null when that list has no date. Still returned when the organization was later reinstated.",
-        ),
+      revoked,
+      revocationDate,
       provenance: z.object({
         is501c3: sourceFile.nullable(),
         deductible: sourceFile.nullable(),
@@ -260,7 +258,7 @@ const SEARCH_OUTPUT = z.object({
       }),
     }),
   ),
-});
+}) satisfies z.ZodType<OrgSearchResponse>;
 
 function nonprofitsServer(caller: Caller): McpServer {
   const server = new McpServer(

@@ -49,7 +49,7 @@ export interface OrgSearchMatch {
   state: string | null;
   is501c3: boolean | null;
   /**
-   * Tri-state. `true` when listed in IRS Publication 78. `false` when Pub 78
+   * `true` when listed in IRS Publication 78. `false` when Pub 78
    * is imported and the org is not listed. `null` when unknown, for example
    * when Pub 78 has not been imported.
    */
