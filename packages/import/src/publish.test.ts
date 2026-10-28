@@ -11,10 +11,13 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Client, InStatement } from "@libsql/client";
 import {
+  FILING_SIZE_INDEX,
   holdsBuild,
+  ORGS_KEY_INDEX,
   readDataMeta,
   readServedDatabase,
   type ServedDatabase,
+  searchSql,
   switchServedDatabase,
 } from "@nonprofits/db";
 import {
@@ -32,6 +35,14 @@ import {
   publishDataFile,
 } from "./publish.ts";
 import { renderSummary, runRecord } from "./summary.ts";
+import type { WarmupReport } from "./warmup.ts";
+
+/** Every statement warm-up sends: the search, then one row through each index. */
+const WARMUP_SQL = new Set([
+  searchSql(true),
+  `SELECT total_revenue FROM filings INDEXED BY ${FILING_SIZE_INDEX} LIMIT 1`,
+  `SELECT ein FROM orgs INDEXED BY ${ORGS_KEY_INDEX} LIMIT 1`,
+]);
 
 /** A built file: what `buildDataFile` hands publish. */
 interface Built {
@@ -201,10 +212,8 @@ describe("publishing a verified file", () => {
           typeof statement === "string"
             ? { sql: statement, args: [] }
             : statement;
-        // warm-up is the step that reads pages; the check above it stays a seek
-        if (sql.includes("orgs_fts MATCH") || sql.includes("INDEXED BY")) {
-          continue;
-        }
+        // warm-up reads pages on purpose; the checks before it must stay seeks
+        if (WARMUP_SQL.has(sql)) continue;
         const plan = await file.execute({
           sql: `EXPLAIN QUERY PLAN ${sql}`,
           args: args ?? [],
@@ -303,6 +312,62 @@ test("a warm-up that spends its budget still switches", async () => {
   expect(
     warnings.some((line) => line.startsWith("WARNING: warm-up stopped")),
   ).toBe(true);
+  expect(thrown).toEqual([]);
+});
+
+test("a warm-up that cannot start still switches, its one warning reported", async () => {
+  const build = await built("2026-10-01T00:00:00Z");
+  const local = localDatabases(join(work, "databases"));
+  let opened = 0;
+  const failing = holdingToken({
+    ...local,
+    async open(database) {
+      opened += 1;
+      // the first open is the check's, the second warm-up's
+      if (opened === 2) throw new Error("connection refused");
+      return local.open(database);
+    },
+  });
+  const reports: WarmupReport[] = [];
+
+  await publish(build, failing, {
+    onWarmup: (warmup) => {
+      reports.push(warmup);
+    },
+  });
+
+  const pointer = await readServedDatabase(app.client);
+  expect(pointer.database?.name).toBe(dataDatabaseName(build.buildId));
+  const warning =
+    "WARNING: warm-up failed: connection refused, switching anyway";
+  expect(printed).toContain(warning);
+  expect(reports).toStrictEqual([
+    {
+      queries: [],
+      skipped: 0,
+      seconds: 0,
+      summary: "warm-up: failed before any query ran",
+      warnings: [warning],
+    },
+  ]);
+  expect(thrown).toEqual([]);
+});
+
+test("an onWarmup that throws is called once and the publish still switches", async () => {
+  const build = await built("2026-10-01T00:00:00Z");
+  let calls = 0;
+
+  await publish(build, host, {
+    onWarmup: () => {
+      calls += 1;
+      throw new Error("summary write failed");
+    },
+  });
+
+  expect(calls).toBe(1);
+  const pointer = await readServedDatabase(app.client);
+  expect(pointer.database?.name).toBe(dataDatabaseName(build.buildId));
+  expect(printed.some((line) => line.includes("warm-up failed"))).toBe(false);
   expect(thrown).toEqual([]);
 });
 
@@ -462,6 +527,46 @@ describe("a publish that fails", () => {
     );
   });
 
+  test("stopped during warm-up removes the new database and reports the queries that ran", async () => {
+    const stop = new AbortController();
+    const local = localDatabases(join(work, "databases"));
+    let opened = 0;
+    const stopping = holdingToken({
+      ...local,
+      async open(database) {
+        const client = await local.open(database);
+        opened += 1;
+        // the first open is the check's, the second warm-up's
+        if (opened !== 2) return client;
+        const execute = client.execute.bind(client);
+        let calls = 0;
+        client.execute = (statement: InStatement) => {
+          calls += 1;
+          if (calls === 3) stop.abort(new Error("SIGTERM"));
+          return execute(statement);
+        };
+        return client;
+      },
+    });
+    const reports: WarmupReport[] = [];
+
+    await leavesServingAsItWas(
+      publish(await built("2026-10-01T00:00:00Z"), stopping, {
+        signal: stop.signal,
+        onWarmup: (warmup) => {
+          reports.push(warmup);
+        },
+      }),
+      /stopped: SIGTERM.*removed, nothing switched/,
+    );
+    expect(reports).toHaveLength(1);
+    expect(reports[0]?.queries.map((query) => query.label)).toStrictEqual([
+      "united way",
+      "church",
+    ]);
+    expect(reports[0]?.summary).toMatch(/then stopped with 40 not finished$/);
+  });
+
   test("at upload names what the fetch failure was caused by, its token redacted", async () => {
     const timedOut = holdingToken({
       ...localDatabases(join(work, "databases")),
@@ -575,13 +680,20 @@ describe("a publish that fails", () => {
     expect(await databaseNames()).toStrictEqual([published.database.name]);
   });
 
-  test("at a switch that failed before committing removes the new database", async () => {
+  test("at a switch that failed before committing removes the new database, its warm-up already reported", async () => {
+    const reports: WarmupReport[] = [];
     await leavesServingAsItWas(
       publish(await built("2026-10-01T00:00:00Z"), host, {
         app: failingSwitch("before commit"),
+        onWarmup: (warmup) => {
+          reports.push(warmup);
+        },
       }),
       /switch.*connection reset.*removed, nothing switched/,
     );
+    expect(reports).toHaveLength(1);
+    expect(reports[0]?.queries).toHaveLength(42);
+    expect(reports[0]?.warnings).toStrictEqual([]);
   });
 
   test("at a switch whose outcome can't be read keeps the new database, naming the command that removes it", async () => {

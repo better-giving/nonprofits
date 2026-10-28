@@ -24,7 +24,7 @@ export interface RunRecord {
   steps: Step[];
   loads: Loaded[];
   checks: Check[];
-  /** Set once the uploaded database was warmed, including when that warm-up warned. */
+  /** The warm-up's report, a failed or stopped warm-up's included; null when the run never reached warm-up. */
   warmup: WarmupReport | null;
   failure: string | null;
   /** The command that removes a database the run left behind, holding storage. */

@@ -15,7 +15,11 @@ import { dataDbClient } from "@nonprofits/db/node";
 import { errorMessage } from "./error-message.ts";
 import { printable } from "./summary.ts";
 import { RED_CROSS } from "./verify.ts";
-import { type WarmupReport, warmUploadedDatabase } from "./warmup.ts";
+import {
+  type WarmupReport,
+  WarmupStopped,
+  warmUploadedDatabase,
+} from "./warmup.ts";
 
 /**
  * Where data databases are made, filled and removed: Turso's Platform API, or
@@ -58,11 +62,16 @@ export interface PublishOptions {
   signal?: AbortSignal;
   /** Waits `ms`, the grace period, rejecting if `signal` aborts first; a timer unless given. */
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
-  /** How long warm-up may run before the switch; the module's default when unset. */
+  /** How long warm-up may run before the switch; `WARMUP_BUDGET_MS` when unset. */
   warmupBudgetMs?: number;
-  /** How long one warm-up query may run; the module's default when unset. */
+  /** How long one warm-up query may run; `WARMUP_QUERY_TIMEOUT_MS` when unset. */
   warmupQueryTimeoutMs?: number;
-  /** The warm-up's report, called before the switch even when the switch later fails. */
+  /**
+   * Receives the warm-up's report before the switch, even when the switch
+   * later fails: after a failed warm-up, a report carrying its one warning;
+   * after a stop during warm-up, the report on the queries that ran. Called at
+   * most once; a throw from it is ignored.
+   */
   onWarmup?: (report: WarmupReport) => void;
 }
 
@@ -163,11 +172,19 @@ async function publish(
   );
   await orRemove(async () => {
     unlessStopped();
-    // a warm-up failure warns and the switch still happens; a stop removes the new database
+    const tell = (report: WarmupReport) => {
+      try {
+        onWarmup?.(report);
+      } catch {
+        // the report is lost; the publish goes on
+      }
+    };
     let data: Client | undefined;
+    let report: WarmupReport;
+    // a warm-up failure warns and the switch still happens; a stop removes the new database
     try {
       data = await host.open(database);
-      const report = await warmUploadedDatabase({
+      report = await warmUploadedDatabase({
         db: data,
         log: say,
         ...(signal === undefined ? {} : { signal }),
@@ -176,23 +193,24 @@ async function publish(
           ? {}
           : { queryTimeoutMs: warmupQueryTimeoutMs }),
       });
-      onWarmup?.(report);
     } catch (error) {
       if (signal?.aborted) {
+        if (error instanceof WarmupStopped) tell(error.report);
         throw new Error(`stopped: ${errorMessage(signal.reason)}`);
       }
-      const warning = `WARNING: warm-up failed: ${errorMessage(error)}`;
+      const warning = `WARNING: warm-up failed: ${errorMessage(error)}, switching anyway`;
       say(warning);
-      onWarmup?.({
+      report = {
         queries: [],
         skipped: 0,
         seconds: 0,
-        summary: warning,
+        summary: "warm-up: failed before any query ran",
         warnings: [warning],
-      });
+      };
     } finally {
       data?.close();
     }
+    tell(report);
   });
   await orRemove(async () => unlessStopped());
   let result: SwitchResult;

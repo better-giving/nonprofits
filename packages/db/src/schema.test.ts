@@ -1,6 +1,6 @@
 import { type Client, createClient } from "@libsql/client";
 import { afterEach, describe, expect, test } from "vitest";
-import { COLUMNS, createDataDatabase } from "./index.ts";
+import { COLUMNS, createDataDatabase, ORGS_KEY_INDEX } from "./index.ts";
 
 const open: Client[] = [];
 
@@ -37,6 +37,13 @@ describe("FILING_SIZE_INDEX", () => {
       "total_revenue",
       "total_assets_eoy",
     ]);
+  });
+
+  test("names the index SQLite makes for the orgs primary key", async () => {
+    const db = await dataDatabase();
+    const rs = await db.execute(`PRAGMA index_info(${ORGS_KEY_INDEX})`);
+
+    expect(rs.rows.map((column) => column.name)).toEqual(["ein"]);
   });
 });
 

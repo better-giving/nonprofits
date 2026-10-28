@@ -29,6 +29,9 @@ export const FILING_SIZE_INDEX = "filings_size";
 /** The `CREATE INDEX` statement `dataTablesDdl` runs for `FILING_SIZE_INDEX`. */
 export const FILING_SIZE_INDEX_DDL = `CREATE INDEX ${FILING_SIZE_INDEX} ON filings (ein, total_revenue, total_assets_eoy);`;
 
+/** SQLite's name for the index it makes for `orgs.ein`, the text primary key. */
+export const ORGS_KEY_INDEX = "sqlite_autoindex_orgs_1";
+
 export const COLUMNS = {
   import_runs: [
     "id",

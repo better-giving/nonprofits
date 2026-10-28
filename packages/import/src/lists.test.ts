@@ -22,6 +22,8 @@ const BMF_FIXTURES = new URL("../fixtures/bmf/", import.meta.url);
 const BMF_FILES = ["eo1.csv", "eo2.csv", "eo3.csv", "eo4.csv"];
 const LIST_FIXTURES = new URL("../fixtures/lists/", import.meta.url);
 const RELEASED = "Thu, 10 Sep 2026 09:18:37 GMT";
+/** The long name pub78-deflate64.zip gives EINs 222222222 and 444444444 (see its README). */
+const LONG_NAME = "RESCUE MISSION OF THE GREATER METRO AREA ".repeat(22).trim();
 /** Each list's own Last-Modified: the IRS publishes the three files separately. */
 const RELEASES = {
   pub78: RELEASED,
@@ -48,13 +50,15 @@ function zipped(list: ListName, text: string): Uint8Array {
 }
 
 /**
- * One entry wrapped in a Deflate64 (method 9) zip header around `payload`, so a
- * caller can hand the reader method-9 bytes it cannot inflate.
+ * One entry wrapped in a zip header of `method` (Deflate64, 9, by default)
+ * around `payload`, so a caller can hand the reader bytes it cannot inflate.
+ * `flags` is the entry's general purpose bit flag; bit 0 marks it encrypted.
  */
-function deflate64Zip(
+function methodZip(
   name: string,
   text: string,
   payload: Uint8Array,
+  { method = 9, flags = 0 }: { method?: number; flags?: number } = {},
 ): Uint8Array {
   const data = Buffer.from(text);
   const nameBytes = Buffer.from(name);
@@ -62,8 +66,8 @@ function deflate64Zip(
   const local = Buffer.concat([
     le(0x04034b50, 4),
     le(21, 2),
-    le(0, 2),
-    le(9, 2),
+    le(flags, 2),
+    le(method, 2),
     le(0, 2),
     le(0, 2),
     le(crc, 4),
@@ -78,8 +82,8 @@ function deflate64Zip(
     le(0x02014b50, 4),
     le(21, 2),
     le(21, 2),
-    le(0, 2),
-    le(9, 2),
+    le(flags, 2),
+    le(method, 2),
     le(0, 2),
     le(0, 2),
     le(crc, 4),
@@ -111,6 +115,17 @@ function le(value: number, bytes: number): Buffer {
   const out = Buffer.alloc(bytes);
   out.writeUIntLE(value, 0, bytes);
   return out;
+}
+
+/** How many times each `counted` route has been requested. */
+const requests = new Map<string, number>();
+
+/** A route serving `body` under `RELEASED` that counts its requests in `requests`. */
+function counted(path: string, body: Uint8Array): Route {
+  return (res) => {
+    requests.set(path, (requests.get(path) ?? 0) + 1);
+    res.writeHead(200, { "last-modified": RELEASED }).end(body);
+  };
 }
 
 function fixtureText(list: ListName): Promise<string> {
@@ -156,12 +171,43 @@ beforeAll(async () => {
     body: await readFile(new URL("pub78-deflate64.zip", LIST_FIXTURES)),
     lastModified: RELEASED,
   });
+  const deflate64 = await readFile(
+    new URL("pub78-deflate64.zip", LIST_FIXTURES),
+  );
+  routes.set(
+    "/deflate64-cut/pub78.zip",
+    counted("/deflate64-cut/pub78.zip", deflate64.subarray(0, 300)),
+  );
   routes.set(
     "/deflate64-bad/pub78.zip",
-    deflate64Zip(
-      "data-download-pub78.txt",
-      pub78Text,
-      Buffer.from([0, 1, 2, 3, 4, 5, 6, 7]),
+    counted(
+      "/deflate64-bad/pub78.zip",
+      methodZip(
+        "data-download-pub78.txt",
+        pub78Text,
+        Buffer.from([0, 1, 2, 3, 4, 5, 6, 7]),
+      ),
+    ),
+  );
+  routes.set(
+    "/deflate64-encrypted/pub78.zip",
+    counted(
+      "/deflate64-encrypted/pub78.zip",
+      methodZip("data-download-pub78.txt", pub78Text, Buffer.alloc(32), {
+        flags: 1,
+      }),
+    ),
+  );
+  routes.set(
+    "/method14/pub78.zip",
+    counted(
+      "/method14/pub78.zip",
+      methodZip(
+        "data-download-pub78.txt",
+        pub78Text,
+        Buffer.from([1, 2, 3, 4]),
+        { method: 14 },
+      ),
     ),
   );
   let stallOnce = true;
@@ -741,6 +787,16 @@ test("a real Deflate64 list zip loads", { timeout: 60_000 }, async () => {
       in_pub78: 1,
     },
   ]);
+  // the two names either side of the filler: the second is inflated from a
+  // back-reference only Deflate64 reaches
+  const names = await query<{ ein: string; name: string }>(
+    dir,
+    "SELECT ein, name FROM orgs WHERE ein IN ('222222222', '444444444') ORDER BY ein",
+  );
+  expect(names).toStrictEqual([
+    { ein: "222222222", name: LONG_NAME },
+    { ein: "444444444", name: LONG_NAME },
+  ]);
   expect(await query(dir, orgWithSources("530196605"))).toStrictEqual([
     {
       name: "American National Red Cross",
@@ -756,18 +812,57 @@ test("a real Deflate64 list zip loads", { timeout: 60_000 }, async () => {
   ]);
 });
 
-test("a Deflate64 entry that cannot be inflated names the compression, loading nothing", {
+test.each([
+  [
+    "an encrypted Deflate64 entry is a layout change",
+    "/deflate64-encrypted/pub78.zip",
+    "Pub 78 layout changed in {url}: zip's Deflate64 entry did not inflate: File contains encrypted entry",
+  ],
+  [
+    "a corrupt Deflate64 entry is a failed download",
+    "/deflate64-bad/pub78.zip",
+    "Pub 78 download failed: {url}: zip's Deflate64 entry did not inflate: Invalid compressed data",
+  ],
+  [
+    "a compression method no reader inflates is a layout change",
+    "/method14/pub78.zip",
+    "Pub 78 layout changed in {url}: zip uses compression method 14",
+  ],
+])(
+  "%s, fetched once and loading nothing",
+  {
+    timeout: 60_000,
+  },
+  async (_, path, message) => {
+    const dir = await freshDataDir(path.split("/")[1] ?? "");
+    const before = await counts(dir);
+    const retry = quickRetry();
+    const failure = loadList(dir, "pub78", { path, retry });
+    await expect(failure).rejects.toThrow(
+      message.replace("{url}", `${base}${path}`),
+    );
+    expect(retry.lines).toStrictEqual([]);
+    expect(requests.get(path)).toBe(1);
+    await expect(access(join(work, "pub78.load.sql"))).rejects.toThrow(
+      "ENOENT",
+    );
+    expect(await counts(dir)).toStrictEqual(before);
+  },
+);
+
+test("a Deflate64 zip cut short holds no complete file, fetched once and loading nothing", {
   timeout: 60_000,
 }, async () => {
-  const dir = await freshDataDir("deflate64-bad");
+  const dir = await freshDataDir("deflate64-cut");
   const before = await counts(dir);
   const retry = quickRetry();
   await expect(
-    loadList(dir, "pub78", { path: "/deflate64-bad/pub78.zip", retry }),
+    loadList(dir, "pub78", { path: "/deflate64-cut/pub78.zip", retry }),
   ).rejects.toThrow(
-    `Pub 78 layout changed in ${base}/deflate64-bad/pub78.zip: zip uses Deflate64 compression`,
+    `Pub 78 download failed: ${base}/deflate64-cut/pub78.zip: zip archive holds no complete file`,
   );
   expect(retry.lines).toStrictEqual([]);
+  expect(requests.get("/deflate64-cut/pub78.zip")).toBe(1);
   await expect(access(join(work, "pub78.load.sql"))).rejects.toThrow("ENOENT");
   expect(await counts(dir)).toStrictEqual(before);
 });

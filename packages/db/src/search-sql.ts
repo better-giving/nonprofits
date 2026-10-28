@@ -20,7 +20,9 @@ export const SEARCH_MAX_CANDIDATES = 1_000;
  * (`united way`), so `indexed` joins filings INDEXED BY the covering
  * FILING_SIZE_INDEX: with no sqlite_stat1 the planner picks the primary key,
  * which reads both filing texts per candidate and times out on Turso.
- * `indexed: false` serves a database built before that index.
+ * On a database built before the index, `searchSql(true)` fails with `no such
+ * index`; the caller then runs `searchSql(false)`, which answers through the
+ * primary key.
  */
 export function searchSql(indexed: boolean): string {
   const filings = indexed
