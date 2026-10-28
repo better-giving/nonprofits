@@ -339,14 +339,14 @@ test("a warm-up that cannot start still switches, its one warning reported", asy
   const pointer = await readServedDatabase(app.client);
   expect(pointer.database?.name).toBe(dataDatabaseName(build.buildId));
   const warning =
-    "WARNING: warm-up failed, switching anyway: connection refused";
+    "WARNING: warm-up failed: connection refused, switching anyway";
   expect(printed).toContain(warning);
   expect(reports).toStrictEqual([
     {
       queries: [],
       skipped: 0,
       seconds: 0,
-      summary: warning,
+      summary: "warm-up: failed before any query ran",
       warnings: [warning],
     },
   ]);
@@ -564,7 +564,7 @@ describe("a publish that fails", () => {
       "united way",
       "church",
     ]);
-    expect(reports[0]?.summary).toMatch(/then stopped with 40 not run$/);
+    expect(reports[0]?.summary).toMatch(/then stopped with 40 not finished$/);
   });
 
   test("at upload names what the fetch failure was caused by, its token redacted", async () => {

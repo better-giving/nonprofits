@@ -7,7 +7,12 @@ import {
 } from "@nonprofits/db";
 import { dataDbFixture, type LocalDb } from "@nonprofits/db/fixture";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { WARMUP_TERMS, WarmupStopped, warmUploadedDatabase } from "./warmup.ts";
+import {
+  WARMUP_MIN_QUERY_MS,
+  WARMUP_TERMS,
+  WarmupStopped,
+  warmUploadedDatabase,
+} from "./warmup.ts";
 
 const FILINGS_SIZE_SQL = `SELECT total_revenue FROM filings INDEXED BY ${FILING_SIZE_INDEX} LIMIT 1`;
 const ORGS_KEY_SQL = `SELECT ein FROM orgs INDEXED BY ${ORGS_KEY_INDEX} LIMIT 1`;
@@ -201,9 +206,52 @@ describe("warmUploadedDatabase", () => {
 
     expect(calls).toBe(2);
     expect(report.queries[1]?.warning).toBe(
-      'WARNING: warm-up "church" failed after 1.0 s: timed out after 1000 ms',
+      'WARNING: warm-up "church" failed after 1.0 s: budget ran out after 1000 ms',
     );
     expect(report.skipped).toBe(40);
+  });
+
+  test("a query is not started with less than the least query time left in the budget", async () => {
+    let now = 0;
+    let calls = 0;
+    const db = client(async () => {
+      calls += 1;
+      now = 10_000 - (WARMUP_MIN_QUERY_MS - 1);
+      return empty;
+    });
+
+    const report = await warmUploadedDatabase({
+      db,
+      budgetMs: 10_000,
+      now: () => now,
+    });
+
+    expect(calls).toBe(1);
+    expect(report.queries.every((query) => query.ok)).toBe(true);
+    expect(report.skipped).toBe(41);
+  });
+
+  test("a budget-capped wait names whole milliseconds", async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    const db = client(() => {
+      calls += 1;
+      return new Promise((resolve) => {
+        if (calls === 1) setTimeout(() => resolve(empty), 8_000);
+      });
+    });
+
+    const warming = warmUploadedDatabase({
+      db,
+      budgetMs: 10_000,
+      now: () => Date.now() + (calls > 0 ? 0.25 : 0),
+    });
+    await vi.advanceTimersByTimeAsync(10_000);
+    const report = await warming;
+
+    expect(report.queries[1]?.warning).toMatch(
+      /: budget ran out after 2000 ms$/,
+    );
   });
 
   test("an abort rejects and does not start another query", async () => {
@@ -250,7 +298,7 @@ describe("warmUploadedDatabase", () => {
     expect(report.skipped).toBe(40);
     expect(report.warnings).toEqual([]);
     expect(report.summary).toBe(
-      "warm-up: 2 queries in 0.0 s, then stopped with 40 not run",
+      "warm-up: 2 queries in 0.0 s, then stopped with 40 not finished",
     );
   });
 

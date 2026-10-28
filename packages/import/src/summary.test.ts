@@ -237,9 +237,9 @@ describe("renderSummary's warm-up", () => {
           skipped: 0,
           seconds: 0,
           summary:
-            "WARNING: warm-up failed, switching anyway: token 0123abcd rejected",
+            "WARNING: warm-up failed: token 0123abcd rejected, switching anyway",
           warnings: [
-            "WARNING: warm-up failed, switching anyway: token 0123abcd rejected",
+            "WARNING: warm-up failed: token 0123abcd rejected, switching anyway",
           ],
         },
       }),
@@ -247,7 +247,7 @@ describe("renderSummary's warm-up", () => {
     );
 
     expect(md).toContain(
-      "### Warm-up\n\nWARNING: warm-up failed, switching anyway: token [redacted] rejected\n\n- WARNING: warm-up failed, switching anyway: token [redacted] rejected\n",
+      "### Warm-up\n\nWARNING: warm-up failed: token [redacted] rejected, switching anyway\n\n- WARNING: warm-up failed: token [redacted] rejected, switching anyway\n",
     );
     expect(md).not.toContain("0123abcd");
   });

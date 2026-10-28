@@ -193,13 +193,13 @@ async function publish(
         if (error instanceof WarmupStopped) tell(error.report);
         throw new Error(`stopped: ${errorMessage(signal.reason)}`);
       }
-      const warning = `WARNING: warm-up failed, switching anyway: ${errorMessage(error)}`;
+      const warning = `WARNING: warm-up failed: ${errorMessage(error)}, switching anyway`;
       say(warning);
       report = {
         queries: [],
         skipped: 0,
         seconds: 0,
-        summary: warning,
+        summary: "warm-up: failed before any query ran",
         warnings: [warning],
       };
     } finally {

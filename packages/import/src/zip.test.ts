@@ -17,6 +17,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.unstubAllEnvs();
+  vi.restoreAllMocks();
   await rm(scratch, { recursive: true, force: true });
 });
 
@@ -58,13 +59,24 @@ test.each([1, 3, 4096, Number.POSITIVE_INFINITY])(
   },
 );
 
-test("a Deflate64 read stopped after its first chunk leaves no temp file", async () => {
+test("a Deflate64 read stopped after its first chunk cancels the entry and leaves no temp file", async () => {
+  const cancel = vi.spyOn(ReadableStreamDefaultReader.prototype, "cancel");
   const bytes = await readFile(new URL("deflate64.zip", EFILE_FIXTURES));
   for await (const chunk of firstZipEntry(slices(bytes, 4096))) {
     expect(chunk.length).toBeGreaterThan(0);
     break;
   }
+  expect(cancel).toHaveBeenCalledOnce();
   expect(await readdir(scratch)).toStrictEqual([]);
+});
+
+test("a Deflate64 read to the end does not cancel the entry", async () => {
+  const cancel = vi.spyOn(ReadableStreamDefaultReader.prototype, "cancel");
+  const bytes = await readFile(new URL("deflate64.zip", EFILE_FIXTURES));
+  for await (const _ of firstZipEntry(slices(bytes, 4096))) {
+    // read every chunk
+  }
+  expect(cancel).not.toHaveBeenCalled();
 });
 
 test.each([

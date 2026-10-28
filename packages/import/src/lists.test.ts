@@ -174,7 +174,10 @@ beforeAll(async () => {
   const deflate64 = await readFile(
     new URL("pub78-deflate64.zip", LIST_FIXTURES),
   );
-  routes.set("/deflate64-cut/pub78.zip", deflate64.subarray(0, 300));
+  routes.set(
+    "/deflate64-cut/pub78.zip",
+    counted("/deflate64-cut/pub78.zip", deflate64.subarray(0, 300)),
+  );
   routes.set(
     "/deflate64-bad/pub78.zip",
     counted(
@@ -847,16 +850,19 @@ test.each([
   },
 );
 
-test("a Deflate64 zip cut short holds no complete file, loading nothing", {
+test("a Deflate64 zip cut short holds no complete file, fetched once and loading nothing", {
   timeout: 60_000,
 }, async () => {
   const dir = await freshDataDir("deflate64-cut");
   const before = await counts(dir);
+  const retry = quickRetry();
   await expect(
-    loadList(dir, "pub78", { path: "/deflate64-cut/pub78.zip" }),
+    loadList(dir, "pub78", { path: "/deflate64-cut/pub78.zip", retry }),
   ).rejects.toThrow(
     `Pub 78 download failed: ${base}/deflate64-cut/pub78.zip: zip archive holds no complete file`,
   );
+  expect(retry.lines).toStrictEqual([]);
+  expect(requests.get("/deflate64-cut/pub78.zip")).toBe(1);
   await expect(access(join(work, "pub78.load.sql"))).rejects.toThrow("ENOENT");
   expect(await counts(dir)).toStrictEqual(before);
 });

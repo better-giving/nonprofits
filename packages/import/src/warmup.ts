@@ -18,6 +18,12 @@ export const WARMUP_BUDGET_MS = 600_000;
  */
 export const WARMUP_QUERY_TIMEOUT_MS = 60_000;
 
+/**
+ * The least budget a query is started with. Below it the query could only
+ * time out, and it would keep running on the server past the switch.
+ */
+export const WARMUP_MIN_QUERY_MS = 1_000;
+
 /** Common name searches, warmed in this order, ahead of the index reads. */
 export const WARMUP_TERMS = [
   "united way",
@@ -80,7 +86,7 @@ export interface WarmupQuery {
 
 export interface WarmupReport {
   queries: WarmupQuery[];
-  /** Queries not started because the budget was already spent. */
+  /** Queries not started because the budget was spent, or not finished because a stop cut them short. */
   skipped: number;
   seconds: number;
   /** The summary line, also logged. */
@@ -122,8 +128,9 @@ function queries(): Query[] {
  * Runs the searches, then one row through each index, on a database that is
  * not served yet. Each index read opens the index and walks it for one row,
  * then stops. A missing index warns. A query that fails or outlasts
- * `queryTimeoutMs` is a warning, and none runs past the end of `budgetMs`;
- * once it is spent, the rest are not started. Rejects only when `signal`
+ * `queryTimeoutMs` is a warning, and none is waited on past the end of
+ * `budgetMs`, though a timed-out query keeps running on the server. Once less
+ * than `WARMUP_MIN_QUERY_MS` of the budget is left, the rest are not started. Rejects only when `signal`
  * aborts, which is a stop, not a warning, with `WarmupStopped`.
  */
 export async function warmUploadedDatabase(
@@ -158,13 +165,15 @@ export async function warmUploadedDatabase(
     new WarmupStopped(abortError(signal), finish(true));
   for (const query of plan) {
     if (signal?.aborted) throw stop(signal);
-    const left = budgetMs - (now() - started);
-    if (left <= 0) break;
+    const left = Math.ceil(budgetMs - (now() - started));
+    if (left < Math.min(queryTimeoutMs, WARMUP_MIN_QUERY_MS)) break;
     const at = now();
     try {
       await runBounded(
         () => db.execute({ sql: query.sql, args: query.args }),
-        Math.min(queryTimeoutMs, left),
+        left < queryTimeoutMs
+          ? { ms: left, cause: "budget ran out" }
+          : { ms: queryTimeoutMs, cause: "timed out" },
         signal,
       );
       const seconds = (now() - at) / 1000;
@@ -190,7 +199,7 @@ function summaryLine(
 ): string {
   const queries = ran === 1 ? "1 query" : `${ran} queries`;
   const line = `warm-up: ${queries} in ${seconds.toFixed(1)} s`;
-  if (stopped) return `${line}, then stopped with ${skipped} not run`;
+  if (stopped) return `${line}, then stopped with ${skipped} not finished`;
   return skipped === 0 ? line : `${line}, ${skipped} not started`;
 }
 
@@ -208,20 +217,26 @@ function abortError(signal: AbortSignal): Error {
   return signal.reason instanceof Error ? signal.reason : new Error("aborted");
 }
 
+/** How long `runBounded` waits, and what the warning calls running out of it. */
+interface Bound {
+  ms: number;
+  cause: "timed out" | "budget ran out";
+}
+
 class QueryTimeout extends Error {
-  constructor(ms: number) {
-    super(`timed out after ${ms} ms`);
+  constructor({ ms, cause }: Bound) {
+    super(`${cause} after ${ms} ms`);
     this.name = "QueryTimeout";
   }
 }
 
 /**
- * Waits for `run`, the per-query time, or `signal`, whichever is first.
+ * Waits for `run`, `bound.ms`, or `signal`, whichever is first.
  * A timed-out `run` keeps going in the driver; this function does not.
  */
 async function runBounded(
   run: () => Promise<unknown>,
-  ms: number,
+  bound: Bound,
   signal: AbortSignal | undefined,
 ): Promise<void> {
   if (signal?.aborted) throw abortError(signal);
@@ -235,7 +250,7 @@ async function runBounded(
         });
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timedOut = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new QueryTimeout(ms)), ms);
+    timer = setTimeout(() => reject(new QueryTimeout(bound)), bound.ms);
   });
   const settled = run().then(
     () => "ok" as const,
