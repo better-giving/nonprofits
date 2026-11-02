@@ -1,6 +1,6 @@
 # nonprofits
 
-Shared instructions for coding agents. Stack, commands, layout, conventions, and the Never list live here. Claude Code loads this file from `.claude/CLAUDE.md`; Cursor loads it from `.cursor/rules/project.mdc`.
+Claude Code loads this file from `.claude/CLAUDE.md`; Cursor loads it from `.cursor/rules/project.mdc`.
 
 ## Stack
 
@@ -18,7 +18,7 @@ pnpm install --frozen-lockfile
 pnpm check
 ```
 
-`pnpm check` (root `package.json`) is the gate a change has to pass: Biome, then typecheck, then the whole Vitest suite.
+`pnpm check` (root `package.json`) is the gate a change has to pass: Biome, then typecheck, then the whole Vitest suite. Run the suite whole rather than a filtered subset: ~8 s wall on 8 cores (43 files, measured 2026-11-02).
 
 Before a commit, `.claude/skills/verify/` runs the quick pair: `pnpm exec biome check .`, then `pnpm typecheck`. `pnpm format` leaves import order alone, which `biome check` also gates; `pnpm exec biome check --write .` fixes both.
 
@@ -37,6 +37,18 @@ How to run the API, mint a local key, or build a month of IRS data: [CONTRIBUTIN
 `pnpm typecheck` enforces the "May import" column: a workspace package missing from a package's `dependencies` and `devDependencies` does not resolve there. `cli`'s "in tests only" is the exception: `@nonprofits/api` is a `cli` devDependency, so nothing stops `cli`'s `src` importing it. Nothing checks that `core` stays free of I/O, SQL, and framework code.
 
 A new variable the api reads goes in `PRODUCTION_ENV` (`packages/api/src/production.ts`) and in `packages/api/.env.example`, a `required` or `secret` one as a `replace-with-` placeholder and an `optional` one empty; `packages/api/src/deploy.test.ts` fails when the two lists differ or when the example sets a `required` or `secret` variable to a value that would serve. A test runs only if its path matches `packages/*/{src,test}/**/*.test.ts` (`vitest.config.ts`).
+
+## Team
+
+Claude Code routes work to these `kru` seats, one per lane:
+
+- **api** → `kru:hono-builder` — `packages/api`, the Hono app serving `/v1`, `/mcp`, the admin key routes and the daily cron route, plus `packages/core`'s lookup and search logic (hono 4.13.13, `@modelcontextprotocol/server` 2.2.0)
+- **platform** → `kru:vercel-platform-engineer` — `packages/api/vercel.json`, `build.ts` and `server.ts`: deploy, env and secrets, the daily cron, Firewall per-minute limits (`@vercel/firewall` 1.2.5, `@vercel/functions` 3.9.11)
+- **data** → `kru:turso-specialist` — `packages/db`'s schema, migrations and the served-database pointer, and every `@libsql/client` 0.18.0 call in `packages/api` and `packages/import`
+- **import** → `kru:extension-builder` — `packages/import`, the Node job that parses IRS bulk files into each month's SQLite file, and `.github/workflows/import.yml` (csv-parse 7.0.3, `@zip.js/zip.js` 2.18.2, fflate 0.8.3, saxes 6.0.0, undici 7.29.1)
+- **keys** → `kru:better-auth-specialist` — the API-key layer in `packages/api` and the key CLI in `packages/cli` (`better-auth` and `@better-auth/api-key` 1.7.7, on `kysely` 0.29.6)
+- **skills** → `kru:vitest` for vitest ^5.0.3 and `kru:zod` for zod 4.6.5 (`pnpm-workspace.yaml` catalog); `kru:api-design` for `/v1` routes and minted API keys
+- **mcp** → Vercel (claude.ai connector) for live project state; the `turso@turso` plugin (`.claude/settings.json`), its MCP at `mcp.turso.ai` signed in by the user; context7 (`.mcp.json`)
 
 ## Conventions
 
