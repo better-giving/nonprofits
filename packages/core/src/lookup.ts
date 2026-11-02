@@ -291,7 +291,8 @@ function toWebsiteUrl(raw: string): string | null {
 
   let candidate = trimmed;
   const httpInput = /^http:\/\//i.test(candidate);
-  if (!/^https?:\/\//i.test(candidate)) {
+  const schemeless = !/^https?:\/\//i.test(candidate);
+  if (schemeless) {
     candidate = `https://${candidate}`;
   } else if (httpInput) {
     candidate = `https://${candidate.slice(7)}`;
@@ -315,7 +316,7 @@ function toWebsiteUrl(raw: string): string | null {
   if (!labels.every((label) => HOST_LABEL.test(label))) return null;
   if (!/^[a-z]{2,}$/i.test(tld)) return null;
 
-  if (httpInput && url.port === "80") url.port = "";
+  if ((httpInput || schemeless) && url.port === "80") url.port = "";
 
   // The parser already lowercased the scheme and host; path and query keep their case.
   const serialized = url.href;
