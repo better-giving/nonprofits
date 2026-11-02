@@ -4,7 +4,7 @@ Shared instructions for coding agents. Stack, commands, layout, conventions, and
 
 ## Stack
 
-- **Node 24**, from `.nvmrc`; CI reads it through `actions/setup-node`'s `node-version-file`. Only `.cursor/environment.json` pins a patch (`NODE_VERSION`), and its `NODE_SHA256` has to change with it: the install checks the tarball against that hash.
+- **Node 24**, from `.nvmrc`; CI reads it through `actions/setup-node`'s `node-version-file`. Only `.cursor/environment.json` pins a patch (`NODE_VERSION`), and its `NODE_SHA256` has to change with it: the install checks the tarball against that hash. In cloud agents, nvm's or the image's node can come first on PATH; `.cursor/environment.json` and `.claude/cloud-install.sh` each end `~/.bashrc` and the login file with a line putting the pinned node first, and fail unless new `bash -lc` and `bash -ic` shells resolve it. Run node through those shells or the Bash tool: a bare `bash -c` keeps the PATH it started with.
 - **pnpm**, the version in the root `packageManager` field. CI's `pnpm/action-setup` reads it; `.cursor/environment.json` repeats it as `PNPM_VERSION`, so a bump changes both.
 - **TypeScript**, **Biome**, and **Vitest**, versions in the `catalog` of `pnpm-workspace.yaml`.
 - **Libraries**, same catalog: Hono, `@modelcontextprotocol/server`, `@libsql/client`, `better-auth` and `@better-auth/api-key`, Kysely, Zod, `csv-parse`, `@vercel/firewall`, `@vercel/functions`. A package depends on a catalog entry with `"catalog:"`. Do not pin a different version in a package; nothing checks this.
