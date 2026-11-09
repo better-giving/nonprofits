@@ -1,9 +1,10 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NEVER_BUILT, type ServedPointer } from "@nonprofits/db";
 import { appDbFixture } from "@nonprofits/db/fixture";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { type CliDeps, run } from "./cli.ts";
 import { localDatabases } from "./database-host.ts";
 import { ALERT_DAY, checkSchedule, outputLines } from "./schedule.ts";
@@ -44,7 +45,7 @@ describe("checkSchedule", () => {
     expect(check.alert).toBe("");
   });
 
-  test("a switch late on the 30th UTC is not this month's on the 1st", () => {
+  test("a switch late on the 31st UTC is not the next month's on the 1st", () => {
     const oct = pointer("b", "2026-10-31T23:59:59Z");
 
     expect(
@@ -53,6 +54,36 @@ describe("checkSchedule", () => {
     expect(
       checkSchedule(oct, new Date("2026-10-31T23:59:59Z"), false).proceed,
     ).toBe(false);
+  });
+
+  test("a build_id of NEVER_BUILT is not imported, whatever its switched_at says", () => {
+    const check = checkSchedule(
+      { ...NEVER, switched_at: "2026-11-03T07:20:00Z" },
+      new Date("2026-11-04T06:17:00Z"),
+      false,
+    );
+
+    expect(check.proceed).toBe(true);
+    expect(check.summary).toMatch(/^importing: /);
+  });
+
+  test("says what it does: skip, import, or force", () => {
+    const at = new Date("2026-11-06T06:17:00Z");
+
+    expect(checkSchedule(SEPT, at, false).summary).toBe(
+      "importing: serving build 20260903T061700Z, switched 2026-09-03T06:20:00Z",
+    );
+    expect(checkSchedule(NOV, at, true).summary).toBe(
+      "forced: 20260907T071000Z is already this month's build",
+    );
+  });
+
+  test("a forced run with nothing published still raises the alert", () => {
+    const check = checkSchedule(SEPT, new Date("2026-11-06T06:17:00Z"), true);
+
+    expect(check.proceed).toBe(true);
+    expect(check.alert).toContain("No build was switched in 2026-11");
+    expect(check.summary).toMatch(/^importing: /);
   });
 
   test("a pointer whose time can't be read never counts as imported", () => {
@@ -91,10 +122,56 @@ describe("the alert", () => {
   });
 });
 
-test("outputLines writes one key=value line each for GITHUB_OUTPUT", () => {
-  expect(outputLines({ proceed: true, alert: "a\nb", summary: "s" })).toBe(
-    "proceed=true\nalert=a b\n",
-  );
+// the runner's own zone is UTC; a getDate or month read in local time moves a boundary only elsewhere
+describe.each(["America/Los_Angeles", "Pacific/Auckland"])(
+  "the UTC boundaries, read in %s",
+  (zone) => {
+    beforeEach(() => {
+      vi.stubEnv("TZ", zone);
+    });
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    test("the zone is in effect", () => {
+      // 23:30 UTC is the next calendar day in Auckland, the same one in Los Angeles
+      const local = new Date("2026-11-04T23:30:00Z").getDate();
+
+      expect(local).toBe(zone === "Pacific/Auckland" ? 5 : 4);
+    });
+
+    test("the alert starts at 00:00 UTC on the 5th, not a second before", () => {
+      const sept = (iso: string) => checkSchedule(SEPT, new Date(iso), false);
+
+      expect(sept("2026-11-04T23:59:59Z").alert).toBe("");
+      expect(sept("2026-11-05T00:00:00Z").alert).not.toBe("");
+    });
+
+    test("a switch at the end of October UTC is October's, and November's from the 1st", () => {
+      const oct = pointer("b", "2026-10-31T23:59:59Z");
+
+      expect(
+        checkSchedule(oct, new Date("2026-10-31T23:59:59Z"), false).proceed,
+      ).toBe(false);
+      expect(
+        checkSchedule(oct, new Date("2026-11-01T00:00:00Z"), false).proceed,
+      ).toBe(true);
+    });
+  },
+);
+
+describe("outputLines", () => {
+  test("writes one key=value line each for GITHUB_OUTPUT", () => {
+    expect(outputLines({ proceed: true, alert: "a\nb", summary: "s" })).toBe(
+      "proceed=true\nalert=a b\n",
+    );
+  });
+
+  test("collapses every run of CR and LF in the alert into one space", () => {
+    const alert = "a\r\nb\rc\n\nd";
+
+    expect(outputLines({ proceed: false, alert, summary: "s" })).toBe("proceed=false\nalert=a b c d\n");
+  });
 });
 
 describe("the check command, over a local app database", () => {
@@ -104,11 +181,19 @@ describe("the check command, over a local app database", () => {
     await Promise.all(cleanups.splice(0).map((c) => c()));
   });
 
-  /** Runs `check` at `at` over a pointer set to `served`; resolves the exit code, stdout and the output file. */
+  /**
+   * Runs `check` at `at` over a pointer set to `served`; resolves the exit
+   * code, stdout, stderr and the output file. `before` is what the file
+   * already holds, and `output: false` leaves `--output` off.
+   */
   async function check(
     served: ServedPointer | null,
     at: string,
-    args: string[] = [],
+    {
+      args = [],
+      before = null,
+      output: withOutput = true,
+    }: { args?: string[]; before?: string | null; output?: boolean } = {},
   ) {
     const app = await appDbFixture();
     const dir = await mkdtemp(join(tmpdir(), "schedule-"));
@@ -128,8 +213,11 @@ describe("the check command, over a local app database", () => {
       });
     }
     const out = join(dir, "output");
+    if (before !== null) await writeFile(out, before);
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
-    const code = await run(["check", ...args, "--output", out], {}, {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const argv = ["check", ...args, ...(withOutput ? ["--output", out] : [])];
+    const code = await run(argv, {}, {
       databases: () => ({ app: app.client, host: localDatabases(dir) }),
       sources: () => {
         throw new Error("not reached");
@@ -145,6 +233,8 @@ describe("the check command, over a local app database", () => {
     return {
       code,
       printed,
+      errors: err.mock.calls.map((c) => c.join(" ")),
+      written: existsSync(out),
       output: await readFile(out, "utf8").catch(() => ""),
     };
   }
@@ -166,7 +256,7 @@ describe("the check command, over a local app database", () => {
   });
 
   test("--force proceeds although the month is live", async () => {
-    const r = await check(NOV, "2026-11-04T06:17:00Z", ["--force"]);
+    const r = await check(NOV, "2026-11-04T06:17:00Z", { args: ["--force"] });
 
     expect(r.output).toBe("proceed=true\nalert=\n");
   });
@@ -175,5 +265,32 @@ describe("the check command, over a local app database", () => {
     const r = await check(null, "2026-11-03T06:17:00Z");
 
     expect(r.output).toBe("proceed=true\nalert=\n");
+  });
+
+  test("appends to an output file that already has lines", async () => {
+    const r = await check(NOV, "2026-11-04T06:17:00Z", {
+      before: "earlier=1\n",
+    });
+
+    expect(r.output).toBe("earlier=1\nproceed=false\nalert=\n");
+  });
+
+  test("without --output prints the summary and writes no file", async () => {
+    const r = await check(NOV, "2026-11-04T06:17:00Z", { output: false });
+
+    expect(r.code).toBe(0);
+    expect(r.printed).toStrictEqual(["already imported 20260907T071000Z"]);
+    expect(r.written).toBe(false);
+  });
+
+  test("exits 2 on a flag it doesn't take, naming it, and writes nothing", async () => {
+    const r = await check(NOV, "2026-11-04T06:17:00Z", {
+      args: ["--summary", "s.md"],
+    });
+
+    expect(r.code).toBe(2);
+    expect(r.errors[0]).toBe("check takes no --summary");
+    expect(r.printed).toStrictEqual([]);
+    expect(r.written).toBe(false);
   });
 });

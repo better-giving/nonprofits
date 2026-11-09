@@ -90,11 +90,13 @@ afterAll(async () => {
  * `script` run as GitHub runs a step (`bash -eo pipefail`) in a directory of
  * its own, which is also `RUNNER_TEMP`, with `env`, and `node` a stub that
  * records its args; resolves with its exit code, its stdout and node's calls.
+ * `flags` are the shell's: a step with no `shell:` runs `bash -e`, without pipefail.
  */
 async function bashStep(
   script: string,
   env: Record<string, string> = {},
   setUp: (dir: string) => Promise<void> = async () => {},
+  flags: string[] = ["-eo", "pipefail"],
 ) {
   const dir = join(work, `step-${++n}`);
   const bin = join(dir, "bin");
@@ -108,7 +110,7 @@ async function bashStep(
     (resolve) => {
       execFile(
         "bash",
-        ["-eo", "pipefail", "-c", script],
+        [...flags, "-c", script],
         {
           cwd: dir,
           env: {
@@ -209,25 +211,51 @@ describe("import.yml's schedule", () => {
   });
 });
 
+/** A step with no `shell:` runs under `bash -e {0}`. */
+const DEFAULT_SHELL = ["-e"];
+
 describe("import.yml's already-imported check", () => {
   test.each([
-    ["a scheduled run", "", "check --output "],
-    ["a dispatch with force", "true", "check --output "],
+    ["a scheduled run", "", ""],
+    ["a dispatch with force", "true", " --force"],
+    ["a dispatch without force", "false", ""],
   ])(
     "%s runs the CLI's check, writing to GITHUB_OUTPUT",
-    async (_, force, _p) => {
-      const step = await bashStep(block(SCHEDULE_CHECK, "run"), {
-        FORCE: force,
-        GITHUB_OUTPUT: "/dev/null",
-        GITHUB_STEP_SUMMARY: "/dev/null",
-      });
+    async (_, force, flag) => {
+      const step = await bashStep(
+        block(SCHEDULE_CHECK, "run"),
+        {
+          FORCE: force,
+          GITHUB_OUTPUT: "/dev/null",
+          GITHUB_STEP_SUMMARY: "/dev/null",
+        },
+        undefined,
+        DEFAULT_SHELL,
+      );
 
       expect(step.code).toBe(0);
       expect(step.calls).toStrictEqual([
-        `packages/import/src/cli.ts check --output /dev/null${force === "true" ? " --force" : ""}`,
+        `packages/import/src/cli.ts check --output /dev/null${flag}`,
       ]);
     },
   );
+
+  test("fails when the CLI's check fails, though its output goes through tee", async () => {
+    const step = await bashStep(
+      block(SCHEDULE_CHECK, "run"),
+      {
+        FORCE: "",
+        GITHUB_OUTPUT: "/dev/null",
+        GITHUB_STEP_SUMMARY: "/dev/null",
+      },
+      async (dir) => {
+        await writeFile(join(dir, "bin", "node"), "#!/bin/sh\nexit 3\n");
+      },
+      DEFAULT_SHELL,
+    );
+
+    expect(step.code).toBe(3);
+  });
 
   test("runs before the import, which waits for its answer, and the alert only on a message", () => {
     expect(WORKFLOW.indexOf(SCHEDULE_CHECK)).toBeLessThan(
@@ -375,17 +403,18 @@ describe("import.yml's cleanup step", () => {
 
 /** What the script sends GitHub to open an issue or add a comment. */
 interface IssueCall {
+  title?: string;
   body: string;
   issue_number?: number;
 }
 
-/** The failure issue step's script run over `summary` (none when null), the issues listed open being `open`; resolves with what it created or commented. */
-async function issueStep(summary: string | null, open: unknown[] = []) {
-  const dir = join(work, `issue-${++n}`);
-  await mkdir(dir, { recursive: true });
-  if (summary !== null) {
-    await writeFile(join(dir, "import-summary.md"), summary);
-  }
+/** A github-script `script` run in `dir` against a fake `github` listing the issues `open`; resolves with what it created or commented. */
+async function githubScript(
+  source: string,
+  dir: string,
+  open: unknown[],
+  env: Record<string, string>,
+) {
   const create = vi.fn(async (_: IssueCall) => ({}));
   const createComment = vi.fn(async (_: IssueCall) => ({}));
   const AsyncFunction = Object.getPrototypeOf(async () => {})
@@ -397,7 +426,7 @@ async function issueStep(summary: string | null, open: unknown[] = []) {
     "github",
     "context",
     "process",
-    block(ISSUE, "script"),
+    source,
   );
   await script(
     createRequire(import.meta.url),
@@ -411,9 +440,26 @@ async function issueStep(summary: string | null, open: unknown[] = []) {
       runId: 7,
       eventName: "schedule",
     },
-    { env: { RUNNER_TEMP: dir } },
+    { env: { RUNNER_TEMP: dir, ...env } },
   );
   return { create, createComment };
+}
+
+/** The failure issue step's script run over `summary` (none when null), the issues listed open being `open`. */
+async function issueStep(summary: string | null, open: unknown[] = []) {
+  const dir = join(work, `issue-${++n}`);
+  await mkdir(dir, { recursive: true });
+  if (summary !== null) {
+    await writeFile(join(dir, "import-summary.md"), summary);
+  }
+  return githubScript(block(ISSUE, "script"), dir, open, {});
+}
+
+/** The missed-month step's script run with `alert`, the issues listed open being `open`. */
+async function flagMissStep(alert: string, open: unknown[] = []) {
+  const dir = join(work, `flag-${++n}`);
+  await mkdir(dir, { recursive: true });
+  return githubScript(block(FLAG_MISS, "script"), dir, open, { ALERT: alert });
 }
 
 const bodyOf = (call: Mock<(arg: IssueCall) => Promise<object>>) =>
@@ -475,5 +521,50 @@ describe("import.yml's failure issue step, run over what the CLI writes", () => 
     expect(createComment.mock.calls[0]?.[0]).toMatchObject({
       issue_number: 12,
     });
+  });
+});
+
+describe("import.yml's missed-month alert step, run over a fake GitHub", () => {
+  const ALERT = "No build was switched in 2026-11 by the 5th (UTC).";
+  const TITLE = "Monthly IRS import failed";
+
+  test("shares the failure step's issue title, so both land in one thread", () => {
+    const titleIn = (text: string) => /const title = "([^"]+)";/.exec(text)?.[1];
+
+    expect(titleIn(block(FLAG_MISS, "script"))).toBe(TITLE);
+    expect(titleIn(block(ISSUE, "script"))).toBe(TITLE);
+  });
+
+  test("opens an issue carrying the alert and the run's url when none is open", async () => {
+    const { create, createComment } = await flagMissStep(ALERT);
+
+    expect(createComment).not.toHaveBeenCalled();
+    expect(create).toHaveBeenCalledOnce();
+    expect(create.mock.calls[0]?.[0]).toMatchObject({
+      title: TITLE,
+      body: `${ALERT} Run: https://github.com/o/r/actions/runs/7`,
+    });
+  });
+
+  test("comments on the open issue with that title instead of opening another", async () => {
+    const { create, createComment } = await flagMissStep(ALERT, [
+      { number: 5, title: "Something else" },
+      { number: 12, title: TITLE },
+    ]);
+
+    expect(create).not.toHaveBeenCalled();
+    expect(createComment.mock.calls[0]?.[0]).toMatchObject({
+      issue_number: 12,
+      body: `${ALERT} Run: https://github.com/o/r/actions/runs/7`,
+    });
+  });
+
+  test("skips a pull request with that title and opens an issue", async () => {
+    const { create, createComment } = await flagMissStep(ALERT, [
+      { number: 9, title: TITLE, pull_request: { url: "x" } },
+    ]);
+
+    expect(createComment).not.toHaveBeenCalled();
+    expect(create).toHaveBeenCalledOnce();
   });
 });
