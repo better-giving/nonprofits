@@ -79,6 +79,9 @@ jobs:
           node packages/import/src/cli.ts "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Flag a missed month
         if: steps.check.outputs.alert != ''
+        # the Import's `if` carries an implicit success(), so a failed issues API
+        # call here would skip the import on the days the month is overdue
+        continue-on-error: true
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           ALERT: ${{ steps.check.outputs.alert }}

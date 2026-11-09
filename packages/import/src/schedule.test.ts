@@ -74,6 +74,7 @@ describe("the alert", () => {
 
     expect(alert).toContain("No build was switched in 2026-11 by the 5th");
     expect(alert).not.toContain("\n");
+    expect(alert).toMatch(/ This run is importing it now\.$/);
     expect(checkSchedule(SEPT, now(7), false).alert).not.toBe("");
   });
 

@@ -238,6 +238,10 @@ describe("import.yml's already-imported check", () => {
     expect(WORKFLOW.indexOf(FLAG_MISS)).toBeLessThan(WORKFLOW.indexOf(IMPORT));
   });
 
+  test("the alert can't block the import", () => {
+    expect(FLAG_MISS).toMatch(/^ {8}continue-on-error: true$/m);
+  });
+
   test("hands the CLI the secrets the check step requires, and the CLI takes its flags", async () => {
     expect(secretsIn(SCHEDULE_CHECK)).toStrictEqual(
       Object.keys(TURSO_SECRETS).sort(),

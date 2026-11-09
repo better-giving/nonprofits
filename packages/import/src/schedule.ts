@@ -39,7 +39,7 @@ export function checkSchedule(
   const month = now.toISOString().slice(0, 7);
   const overdue = !imported && now.getUTCDate() >= ALERT_DAY;
   const alert = overdue
-    ? `No build was switched in ${month} by the ${ALERT_DAY}th (UTC); serving build ${pointer.build_id}, switched ${pointer.switched_at}. The catch-up run is importing now.`
+    ? `No build was switched in ${month} by the ${ALERT_DAY}th (UTC); serving build ${pointer.build_id}, switched ${pointer.switched_at}. This run is importing it now.`
     : "";
   if (imported && !force) {
     return {
