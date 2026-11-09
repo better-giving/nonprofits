@@ -26,6 +26,7 @@ API tests:
 - `cli-run.test.ts` calls `run()` in process. `harness({ wrap })` opens a local app database fixture through `openDatabases`, the wiring the CLI's own entry uses, and publishes a fixture build from an earlier month (`Date` faked for its build id) to local files, so every run starts with a database served; `wrap` swaps parts of the host, as `holdingUpload` holds the upload until the run's stop signal aborts it. `fixtureServer()`, `fixtureSources()` and `FIXTURE_COUNTS` (`test-support.ts`) serve a full fixture build and the floors it clears.
 - `cli-redaction.test.ts` runs `run()` with a host whose failure quotes the env's tokens and one it minted during the run. Env secrets reach the summary writer and what `run` prints only through its `env` argument; the host's, through `host.secrets`.
 - `workflow.test.ts` reads `.github/workflows/import.yml` and runs its shell steps (`bash -eo pipefail`, a stub `node`) and failure-issue script over summaries `renderSummary` writes, so a change to either side's text breaks a test; the import step's args go through `run()` to prove the CLI takes them.
+- `schedule.test.ts` covers `checkSchedule` (skip when this UTC month is imported, `--force`, the alert from the 5th) and the `check` command over a local app database.
 - `summary.test.ts` covers `renderSummary` and `summaryWriter` directly.
 
 No test spawns the CLI: the signal handlers and `process.exit` in its entry are the one part not run by a test.

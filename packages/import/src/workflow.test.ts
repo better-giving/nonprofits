@@ -55,6 +55,8 @@ function block(text: string, key: string): string {
 }
 
 const CHECK = step("Check the Turso secrets are set");
+const SCHEDULE_CHECK = step("Check whether this month is imported");
+const FLAG_MISS = step("Flag a missed month");
 const IMPORT = step("Import");
 const RUN_SUMMARY = step("Run summary");
 const ISSUE = step("Open or comment on the failure issue");
@@ -188,6 +190,74 @@ describe("import.yml's secrets check", () => {
     expect(step.code).toBe(1);
     expect(step.stdout).toContain("::error title=Not a Turso Cloud database::");
     expect(step.stdout).not.toContain("/tmp/app.db");
+  });
+});
+
+describe("import.yml's schedule", () => {
+  test("keeps the 3rd and adds a daily catch-up from the 4th to the 7th at 06:17 UTC", () => {
+    expect(
+      [...WORKFLOW.matchAll(/- cron: "([^"]+)"/g)].map((m) => m[1]),
+    ).toStrictEqual(["17 6 3 * *", "17 6 4-7 * *"]);
+  });
+
+  test("a dispatch takes force and force_verify_failure, both off by default", () => {
+    for (const input of ["force", "force_verify_failure"]) {
+      expect(WORKFLOW).toMatch(
+        new RegExp(`^ {6}${input}:\\n(?: {8}.*\\n)*? {8}default: false`, "m"),
+      );
+    }
+  });
+});
+
+describe("import.yml's already-imported check", () => {
+  test.each([
+    ["a scheduled run", "", "check --output "],
+    ["a dispatch with force", "true", "check --output "],
+  ])(
+    "%s runs the CLI's check, writing to GITHUB_OUTPUT",
+    async (_, force, _p) => {
+      const step = await bashStep(block(SCHEDULE_CHECK, "run"), {
+        FORCE: force,
+        GITHUB_OUTPUT: "/dev/null",
+        GITHUB_STEP_SUMMARY: "/dev/null",
+      });
+
+      expect(step.code).toBe(0);
+      expect(step.calls).toStrictEqual([
+        `packages/import/src/cli.ts check --output /dev/null${force === "true" ? " --force" : ""}`,
+      ]);
+    },
+  );
+
+  test("runs before the import, which waits for its answer, and the alert only on a message", () => {
+    expect(WORKFLOW.indexOf(SCHEDULE_CHECK)).toBeLessThan(
+      WORKFLOW.indexOf(IMPORT),
+    );
+    expect(IMPORT).toContain("if: steps.check.outputs.proceed == 'true'");
+    expect(FLAG_MISS).toContain("if: steps.check.outputs.alert != ''");
+    expect(WORKFLOW.indexOf(FLAG_MISS)).toBeLessThan(WORKFLOW.indexOf(IMPORT));
+  });
+
+  test("hands the CLI the secrets the check step requires, and the CLI takes its flags", async () => {
+    expect(secretsIn(SCHEDULE_CHECK)).toStrictEqual(
+      Object.keys(TURSO_SECRETS).sort(),
+    );
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    const code = await run(["check", "--output", "/dev/null", "--force"], {}, {
+      databases: () => {
+        throw new Error("reached the databases");
+      },
+      sources: () => {
+        throw new Error("not reached");
+      },
+      floors: FIXTURE_COUNTS,
+      loadDir: "load",
+      dataFile: "data",
+      onSignal: () => {},
+      exit: () => {},
+    } satisfies CliDeps);
+    stderr.mockRestore();
+    expect(code).toBe(1);
   });
 });
 

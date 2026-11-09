@@ -1,3 +1,4 @@
+import { appendFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import type { Client } from "@libsql/client";
@@ -16,6 +17,7 @@ import {
   type PublishReport,
   publishDataFile,
 } from "./publish.ts";
+import { checkSchedule, outputLines } from "./schedule.ts";
 import { irsSources, type SourceConfig } from "./sources.ts";
 import {
   finish,
@@ -51,6 +53,11 @@ const USAGE = `usage: node src/cli.ts <command>
       data database, switch the served-database pointer to it and delete the
       one served before; --force-verify-failure fails verify after the full
       build, so nothing is published
+  check [--force] [--output <file>]
+      read the served-database pointer and print whether this month is already
+      imported (and, from the 5th UTC, a miss); --output appends proceed= and
+      alert= lines to <file>, as GitHub Actions reads $GITHUB_OUTPUT; --force
+      proceeds although the month is imported
   --summary <file>  append a markdown summary of the run to <file>, failed or stopped too
 The app database is TURSO_APP_DB_URL (.turso/app.db when unset). A Turso Cloud
 one publishes through Turso's Platform API, with TURSO_APP_DB_TOKEN,
@@ -60,6 +67,7 @@ TURSO_PLATFORM_TOKEN, TURSO_ORG and TURSO_GROUP; any other to files in .turso/da
 const FLAGS = {
   build: ["out", "efile-batch", "force-verify-failure"],
   refresh: ["force-verify-failure", "summary"],
+  check: ["force", "output"],
 } as const;
 
 function repoPath(path: string): string {
@@ -76,6 +84,8 @@ function args(argv: readonly string[]) {
         out: { type: "string" },
         "efile-batch": { type: "string", multiple: true },
         summary: { type: "string" },
+        force: { type: "boolean" },
+        output: { type: "string" },
         "force-verify-failure": { type: "boolean" },
       },
       allowPositionals: true,
@@ -120,6 +130,8 @@ export interface CliDeps {
   dataFile: string;
   /** As `PublishOptions.sleep`: a timer unless given. */
   sleep?: PublishOptions["sleep"];
+  /** The clock `check` reads; the real one unless given. */
+  now?: () => Date;
   /** Has `stop` called on every SIGINT (code 130) and SIGTERM (143). */
   onSignal(stop: (signal: NodeJS.Signals, code: number) => void): void;
   /** Ends the process, once a stop is done. */
@@ -200,7 +212,10 @@ export async function run(
 async function command(argv: readonly string[], s: Session): Promise<number> {
   const { values, positionals } = args(argv);
   const [name, ...rest] = positionals;
-  if ((name !== "build" && name !== "refresh") || rest.length > 0) {
+  if (
+    (name !== "build" && name !== "refresh" && name !== "check") ||
+    rest.length > 0
+  ) {
     throw new UsageError();
   }
   if (name === "refresh" && values["efile-batch"] !== undefined) {
@@ -217,6 +232,8 @@ async function command(argv: readonly string[], s: Session): Promise<number> {
   }
   if (name === "build") {
     await runBuild(values, s);
+  } else if (name === "check") {
+    await runCheck(values, s);
   } else {
     await runRefresh(values, s);
   }
@@ -243,6 +260,20 @@ async function runBuild(values: Values, s: Session): Promise<void> {
   console.log(
     `build: ${report.out}, build ${report.buildId} (${listed(report.counts)})`,
   );
+}
+
+/** Reads the pointer and prints whether this month's import is already done; see `checkSchedule`. */
+async function runCheck(values: Values, s: Session): Promise<void> {
+  const pointer = await readServedDatabase(s.open().app);
+  const check = checkSchedule(
+    pointer,
+    s.deps.now?.() ?? new Date(),
+    values.force === true,
+  );
+  if (values.output !== undefined) {
+    appendFileSync(values.output, outputLines(check));
+  }
+  console.log(check.summary);
 }
 
 /** Builds, verifies against what is served, and publishes; writes the run's summary, failed or stopped too. */
