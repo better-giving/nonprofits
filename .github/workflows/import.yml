@@ -3,7 +3,7 @@ on:
   schedule:
     # the 3rd, after the IRS's month-end revocation list and mid-month BMF, Pub 78 and e-file index refreshes
     - cron: "17 6 3 * *"
-    # catch-up for a run GitHub delayed or dropped: each skips the import at the already-imported check once the month is published
+    # catch-up for a run GitHub delayed or dropped: each skips the import once this month's build is live
     - cron: "17 6 4-7 * *"
   workflow_dispatch:
     inputs:
