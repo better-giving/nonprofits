@@ -216,16 +216,19 @@ const DEFAULT_SHELL = ["-e"];
 
 describe("import.yml's already-imported check", () => {
   test.each([
-    ["a scheduled run", "", ""],
-    ["a dispatch with force", "true", " --force"],
-    ["a dispatch without force", "false", ""],
+    ["a scheduled run", "", "", ""],
+    ["a dispatch with force", "true", "false", " --force"],
+    ["a dispatch with force_verify_failure", "false", "true", " --force"],
+    ["a dispatch with both", "true", "true", " --force"],
+    ["a dispatch with neither", "false", "false", ""],
   ])(
     "%s runs the CLI's check, writing to GITHUB_OUTPUT",
-    async (_, force, flag) => {
+    async (_, force, forceVerifyFailure, flag) => {
       const step = await bashStep(
         block(SCHEDULE_CHECK, "run"),
         {
           FORCE: force,
+          FORCE_VERIFY_FAILURE: forceVerifyFailure,
           GITHUB_OUTPUT: "/dev/null",
           GITHUB_STEP_SUMMARY: "/dev/null",
         },

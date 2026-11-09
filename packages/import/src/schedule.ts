@@ -3,6 +3,8 @@ import { NEVER_BUILT, type ServedPointer } from "@nonprofits/db";
 /** The UTC day of the month from which an unpublished month is a miss worth an alert. */
 export const ALERT_DAY = 5;
 
+const NOTHING_BUILT = "nothing has been built yet";
+
 /** `YYYY-MM` of a UTC ISO timestamp (`switched_at`'s format), or null when it isn't one. */
 function utcMonth(iso: string): string | null {
   return /^\d{4}-\d{2}(?=-\d{2}T)/.exec(iso)?.[0] ?? null;
@@ -38,8 +40,12 @@ export function checkSchedule(
   const imported = importedThisMonth(pointer, now);
   const month = now.toISOString().slice(0, 7);
   const overdue = !imported && now.getUTCDate() >= ALERT_DAY;
+  const serving =
+    pointer.build_id === NEVER_BUILT
+      ? undefined
+      : `serving build ${pointer.build_id}, switched ${pointer.switched_at}`;
   const alert = overdue
-    ? `No build was switched in ${month} by the ${ALERT_DAY}th (UTC); still serving build ${pointer.build_id}, switched ${pointer.switched_at}. This run is importing ${month} now.`
+    ? `No build was switched in ${month} by the ${ALERT_DAY}th (UTC); ${serving ? `still ${serving}` : NOTHING_BUILT}. This run is importing ${month} now.`
     : "";
   if (imported && !force) {
     return {
@@ -53,7 +59,7 @@ export function checkSchedule(
     alert,
     summary: imported
       ? `forced: ${pointer.build_id} is already this month's build`
-      : `importing: serving build ${pointer.build_id}, switched ${pointer.switched_at}`,
+      : `importing: ${serving ?? NOTHING_BUILT}`,
   };
 }
 

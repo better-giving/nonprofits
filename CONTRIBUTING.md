@@ -72,7 +72,7 @@ With `TURSO_APP_DB_URL` unset, `refresh` publishes to local files under `.turso/
 
 ## Monthly import
 
-`.github/workflows/import.yml` runs `irs refresh` against Turso on the 3rd of each month, and can be run by hand from the Actions tab. Its **force_verify_failure** switch is a dry run: it builds and checks everything, then publishes nothing. A failed run opens a "Monthly IRS import failed" issue.
+`.github/workflows/import.yml` runs `irs refresh` against Turso on the 3rd of each month, with daily catch-ups on the 4th to the 7th; each run skips the import once this UTC month's build is live. Run it by hand from the Actions tab: **force** imports anyway, and **force_verify_failure** is a dry run that builds and checks everything, then publishes nothing, whatever the month's state. A failed run, and from the 5th a run that finds nothing switched this month, comments on the open "Monthly IRS import failed" issue, or opens one.
 
 ## Deploy your own
 

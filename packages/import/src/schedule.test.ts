@@ -64,7 +64,7 @@ describe("checkSchedule", () => {
     );
 
     expect(check.proceed).toBe(true);
-    expect(check.summary).toMatch(/^importing: /);
+    expect(check.summary).toBe("importing: nothing has been built yet");
   });
 
   test("says what it does: skip, import, or force", () => {
@@ -117,8 +117,16 @@ describe("the alert", () => {
     expect(checkSchedule(NOV, now(ALERT_DAY), false).alert).toBe("");
   });
 
-  test("is raised for a database that never built anything", () => {
-    expect(checkSchedule(NEVER, now(ALERT_DAY), false).alert).not.toBe("");
+  test("is raised for a database that never built anything, saying so", () => {
+    expect(checkSchedule(NEVER, now(ALERT_DAY), false).alert).toBe(
+      "No build was switched in 2026-11 by the 5th (UTC); nothing has been built yet. This run is importing 2026-11 now.",
+    );
+  });
+
+  test("names the build still served when one was built earlier", () => {
+    expect(checkSchedule(SEPT, now(ALERT_DAY), false).alert).toBe(
+      "No build was switched in 2026-11 by the 5th (UTC); still serving build 20260903T061700Z, switched 2026-09-03T06:20:00Z. This run is importing 2026-11 now.",
+    );
   });
 });
 
