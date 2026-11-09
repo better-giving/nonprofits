@@ -408,7 +408,7 @@ interface IssueCall {
   issue_number?: number;
 }
 
-/** A github-script `script` run in `dir` against a fake `github` listing the issues `open`; resolves with what it created or commented. */
+/** A github-script `script` run with `RUNNER_TEMP` at `dir` and `env` set, against a fake `github` listing the issues `open`; resolves with what it created or commented. */
 async function githubScript(
   source: string,
   dir: string,

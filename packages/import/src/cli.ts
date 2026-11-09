@@ -55,9 +55,9 @@ const USAGE = `usage: node src/cli.ts <command>
       build, so nothing is published
   check [--force] [--output <file>]
       read the served-database pointer and print whether this month is already
-      imported (and, from the 5th UTC, a miss); --output appends proceed= and
-      alert= lines to <file>, as GitHub Actions reads $GITHUB_OUTPUT; --force
-      proceeds although the month is imported
+      imported; --output appends proceed= and alert= lines to <file>, in the
+      format GitHub Actions reads from $GITHUB_OUTPUT, alert= naming a missed
+      month from the 5th UTC; --force proceeds although the month is imported
   --summary <file>  append a markdown summary of the run to <file>, failed or stopped too
 The app database is TURSO_APP_DB_URL (.turso/app.db when unset). A Turso Cloud
 one publishes through Turso's Platform API, with TURSO_APP_DB_TOKEN,
@@ -262,7 +262,7 @@ async function runBuild(values: Values, s: Session): Promise<void> {
   );
 }
 
-/** Reads the pointer and prints whether this month's import is already done; see `checkSchedule`. */
+/** Prints `checkSchedule`'s summary for the served pointer, and appends its output lines to `--output` when given. */
 async function runCheck(values: Values, s: Session): Promise<void> {
   const pointer = await readServedDatabase(s.open().app);
   const check = checkSchedule(

@@ -28,7 +28,7 @@ export interface ScheduleCheck {
 /**
  * The start of every run: skips the import once this month's build is live
  * (unless `force`), and words an alert when it is the `ALERT_DAY`th or later
- * (UTC) with nothing published.
+ * (UTC) with nothing switched this month.
  */
 export function checkSchedule(
   pointer: ServedPointer,
@@ -39,7 +39,7 @@ export function checkSchedule(
   const month = now.toISOString().slice(0, 7);
   const overdue = !imported && now.getUTCDate() >= ALERT_DAY;
   const alert = overdue
-    ? `No build was switched in ${month} by the ${ALERT_DAY}th (UTC); serving build ${pointer.build_id}, switched ${pointer.switched_at}. This run is importing it now.`
+    ? `No build was switched in ${month} by the ${ALERT_DAY}th (UTC); still serving build ${pointer.build_id}, switched ${pointer.switched_at}. This run is importing ${month} now.`
     : "";
   if (imported && !force) {
     return {
