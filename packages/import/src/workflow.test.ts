@@ -21,6 +21,7 @@ import {
   vi,
 } from "vitest";
 import { type CliDeps, DATA_FILE_NAME, run } from "./cli.ts";
+import { outputLines } from "./schedule.ts";
 import { type RunRecord, renderSummary, runRecord } from "./summary.ts";
 import { FIXTURE_COUNTS } from "./test-support.ts";
 
@@ -86,17 +87,19 @@ afterAll(async () => {
   if (work) await rm(work, { recursive: true, force: true });
 });
 
+/** A step with no `shell:` runs under `bash -e {0}`, without pipefail; no step in import.yml sets one. */
+const DEFAULT_SHELL = ["-e"];
+
 /**
- * `script` run as GitHub runs a step (`bash -eo pipefail`) in a directory of
- * its own, which is also `RUNNER_TEMP`, with `env`, and `node` a stub that
- * records its args; resolves with its exit code, its stdout and node's calls.
- * `flags` are the shell's: a step with no `shell:` runs `bash -e`, without pipefail.
+ * `script` run as GitHub runs a step with no `shell:` (`bash -e`) in a
+ * directory of its own, which is also `RUNNER_TEMP`, with `env`, and `node` a
+ * stub that records its args; resolves with its exit code, its stdout and
+ * node's calls.
  */
 async function bashStep(
   script: string,
   env: Record<string, string> = {},
   setUp: (dir: string) => Promise<void> = async () => {},
-  flags: string[] = ["-eo", "pipefail"],
 ) {
   const dir = join(work, `step-${++n}`);
   const bin = join(dir, "bin");
@@ -110,7 +113,7 @@ async function bashStep(
     (resolve) => {
       execFile(
         "bash",
-        [...flags, "-c", script],
+        [...DEFAULT_SHELL, "-c", script],
         {
           cwd: dir,
           env: {
@@ -211,10 +214,21 @@ describe("import.yml's schedule", () => {
   });
 });
 
-/** A step with no `shell:` runs under `bash -e {0}`. */
-const DEFAULT_SHELL = ["-e"];
-
 describe("import.yml's already-imported check", () => {
+  test("is the step with id check, and every output the workflow reads is one outputLines writes", () => {
+    expect(SCHEDULE_CHECK).toMatch(/^ {8}id: check$/m);
+    const written = outputLines({ proceed: true, alert: "a", summary: "s" })
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => line.split("=")[0]);
+    const read = new Set(
+      [...WORKFLOW.matchAll(/steps\.check\.outputs\.(\w+)/g)].map((m) => m[1]),
+    );
+
+    expect([...read].sort()).toStrictEqual(["alert", "proceed"]);
+    for (const key of read) expect(written).toContain(key);
+  });
+
   test.each([
     ["a scheduled run", "", "", ""],
     ["a dispatch with force", "true", "false", " --force"],
@@ -224,17 +238,12 @@ describe("import.yml's already-imported check", () => {
   ])(
     "%s runs the CLI's check, writing to GITHUB_OUTPUT",
     async (_, force, forceVerifyFailure, flag) => {
-      const step = await bashStep(
-        block(SCHEDULE_CHECK, "run"),
-        {
-          FORCE: force,
-          FORCE_VERIFY_FAILURE: forceVerifyFailure,
-          GITHUB_OUTPUT: "/dev/null",
-          GITHUB_STEP_SUMMARY: "/dev/null",
-        },
-        undefined,
-        DEFAULT_SHELL,
-      );
+      const step = await bashStep(block(SCHEDULE_CHECK, "run"), {
+        FORCE: force,
+        FORCE_VERIFY_FAILURE: forceVerifyFailure,
+        GITHUB_OUTPUT: "/dev/null",
+        GITHUB_STEP_SUMMARY: "/dev/null",
+      });
 
       expect(step.code).toBe(0);
       expect(step.calls).toStrictEqual([
@@ -254,10 +263,30 @@ describe("import.yml's already-imported check", () => {
       async (dir) => {
         await writeFile(join(dir, "bin", "node"), "#!/bin/sh\nexit 3\n");
       },
-      DEFAULT_SHELL,
     );
 
     expect(step.code).toBe(3);
+  });
+
+  test("appends the CLI's summary line to the job summary", async () => {
+    const jobSummary = join(work, "job-summary-check.md");
+    const step = await bashStep(
+      block(SCHEDULE_CHECK, "run"),
+      {
+        FORCE: "",
+        GITHUB_OUTPUT: "/dev/null",
+        GITHUB_STEP_SUMMARY: jobSummary,
+      },
+      async (dir) => {
+        await writeFile(
+          join(dir, "bin", "node"),
+          "#!/bin/sh\necho 'already imported b1'\n",
+        );
+      },
+    );
+
+    expect(step.code).toBe(0);
+    expect(await readFile(jobSummary, "utf8")).toBe("already imported b1\n");
   });
 
   test("runs before the import, which waits for its answer, and the alert only on a message", () => {
@@ -384,6 +413,17 @@ describe("import.yml's run summary step", () => {
     expect(step.code).toBe(0);
     expect(step.stdout).not.toContain("::warning");
   });
+
+  test("succeeds and adds nothing when the import was skipped and wrote no summary", async () => {
+    const jobSummary = join(work, "job-summary-skipped.md");
+    const step = await bashStep(block(RUN_SUMMARY, "run"), {
+      GITHUB_STEP_SUMMARY: jobSummary,
+    });
+
+    expect(step.code).toBe(0);
+    expect(existsSync(jobSummary)).toBe(false);
+    expect(step.stdout).not.toContain("::warning");
+  });
 });
 
 describe("import.yml's cleanup step", () => {
@@ -420,6 +460,13 @@ interface IssueCall {
   issue_number?: number;
 }
 
+type Paginate = Mock<
+  (method: unknown, options: Record<string, unknown>) => Promise<unknown[]>
+>;
+
+/** What the fake `github.rest.issues.listForRepo` is, so a test can tell `paginate` was handed it. */
+const listForRepo = {};
+
 /** A github-script `script` run with `RUNNER_TEMP` at `dir` and `env` set, against a fake `github` listing the issues `open`; resolves with what it created or commented. */
 async function githubScript(
   source: string,
@@ -429,6 +476,9 @@ async function githubScript(
 ) {
   const create = vi.fn(async (_: IssueCall) => ({}));
   const createComment = vi.fn(async (_: IssueCall) => ({}));
+  const paginate = vi.fn(
+    async (_method: unknown, _options: Record<string, unknown>) => open,
+  );
   const AsyncFunction = Object.getPrototypeOf(async () => {})
     .constructor as new (
     ...args: string[]
@@ -443,8 +493,8 @@ async function githubScript(
   await script(
     createRequire(import.meta.url),
     {
-      paginate: async () => open,
-      rest: { issues: { listForRepo: {}, create, createComment } },
+      paginate,
+      rest: { issues: { listForRepo, create, createComment } },
     },
     {
       repo: { owner: "o", repo: "r" },
@@ -454,7 +504,19 @@ async function githubScript(
     },
     { env: { RUNNER_TEMP: dir, ...env } },
   );
-  return { create, createComment };
+  return { create, createComment, paginate };
+}
+
+/** What the scripts must list: the open issues the bot itself opened, in this repo. */
+function expectListsOpenBotIssues(paginate: Paginate) {
+  expect(paginate).toHaveBeenCalledOnce();
+  expect(paginate.mock.calls[0]?.[0]).toBe(listForRepo);
+  expect(paginate.mock.calls[0]?.[1]).toMatchObject({
+    owner: "o",
+    repo: "r",
+    state: "open",
+    creator: "github-actions[bot]",
+  });
 }
 
 /** The failure issue step's script run over `summary` (none when null), the issues listed open being `open`. */
@@ -520,6 +582,12 @@ describe("import.yml's failure issue step, run over what the CLI writes", () => 
     expect(body).not.toContain("uploading failed");
   });
 
+  test("looks for its issue among the open ones the bot opened", async () => {
+    const { paginate } = await issueStep(null);
+
+    expectListsOpenBotIssues(paginate);
+  });
+
   test("says no summary was written when there is none, and comments on the open issue instead of opening another", async () => {
     const { create, createComment } = await issueStep(null, [
       { number: 12, title: "Monthly IRS import failed" },
@@ -541,10 +609,17 @@ describe("import.yml's missed-month alert step, run over a fake GitHub", () => {
   const TITLE = "Monthly IRS import failed";
 
   test("shares the failure step's issue title, so both land in one thread", () => {
-    const titleIn = (text: string) => /const title = "([^"]+)";/.exec(text)?.[1];
+    const titleIn = (text: string) =>
+      /const title = "([^"]+)";/.exec(text)?.[1];
 
     expect(titleIn(block(FLAG_MISS, "script"))).toBe(TITLE);
     expect(titleIn(block(ISSUE, "script"))).toBe(TITLE);
+  });
+
+  test("looks for its issue among the open ones the bot opened", async () => {
+    const { paginate } = await flagMissStep(ALERT);
+
+    expectListsOpenBotIssues(paginate);
   });
 
   test("opens an issue carrying the alert and the run's url when none is open", async () => {

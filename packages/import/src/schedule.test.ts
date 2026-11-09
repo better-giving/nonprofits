@@ -116,6 +116,13 @@ describe("the alert", () => {
     expect(checkSchedule(NOV, now(ALERT_DAY), false).alert).toBe("");
   });
 
+  test("is not raised on a forced run once a build is switched this month", () => {
+    const check = checkSchedule(NOV, now(ALERT_DAY), true);
+
+    expect(check.proceed).toBe(true);
+    expect(check.alert).toBe("");
+  });
+
   test("is raised for a database that never built anything, saying so", () => {
     expect(checkSchedule(NEVER, now(ALERT_DAY), false).alert).toBe(
       "No build was switched in 2026-11 by the 5th (UTC); nothing has been built yet. This run is importing 2026-11 now.",
@@ -129,7 +136,7 @@ describe("the alert", () => {
   });
 });
 
-// the runner's own zone is UTC; a getDate or month read in local time moves a boundary only elsewhere
+// each case pins TZ itself, so a getDate or month read in local time moves a boundary here whatever zone the machine runs in
 describe.each(["America/Los_Angeles", "Pacific/Auckland"])(
   "the UTC boundaries, read in %s",
   (zone) => {
@@ -177,7 +184,9 @@ describe("outputLines", () => {
   test("collapses every run of CR and LF in the alert into one space", () => {
     const alert = "a\r\nb\rc\n\nd";
 
-    expect(outputLines({ proceed: false, alert, summary: "s" })).toBe("proceed=false\nalert=a b c d\n");
+    expect(outputLines({ proceed: false, alert, summary: "s" })).toBe(
+      "proceed=false\nalert=a b c d\n",
+    );
   });
 });
 
