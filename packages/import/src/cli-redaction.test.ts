@@ -68,6 +68,9 @@ async function failingRefresh(env: Record<string, string | undefined>) {
       app: appDbClient({ TURSO_APP_DB_URL: app.url }),
       host: quotingHost(),
     }),
+    appDatabase: () => {
+      throw new Error("not reached");
+    },
     // never downloaded from: reading the served counts fails first
     sources: () => {
       throw new Error("not reached");

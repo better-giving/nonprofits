@@ -120,6 +120,11 @@ interface Terminal {
 export interface CliDeps {
   /** The databases `env` names, opened once per run, which closes `app`. */
   databases(env: Env): Databases;
+  /**
+   * The app database `env` names alone, with no host: what `check` opens,
+   * once per run, which closes it.
+   */
+  appDatabase(env: Env): Client;
   /** Every IRS source; e-file from `batches` alone when given. */
   sources(batches: readonly string[] | undefined): SourceConfig;
   /** The fewest of each count a build may hold. */
@@ -146,6 +151,8 @@ interface Session {
   secrets: () => Secrets;
   /** The run's databases, opened on the first call. */
   open: () => Databases;
+  /** The run's app database alone, opened on the first call. */
+  openApp: () => Client;
   /** Called once a signal starts stopping the run, with the stop's exit code and its cleanup. */
   onStop: (code: number, stopped: Promise<void>) => void;
 }
@@ -165,6 +172,7 @@ export async function run(
   let stoppedWith: number | null = null;
   let stopped: Promise<void> | null = null;
   let opened: Databases | undefined;
+  let openedApp: Client | undefined;
   const secrets = () => [
     env.TURSO_APP_DB_TOKEN,
     env.TURSO_PLATFORM_TOKEN,
@@ -183,6 +191,10 @@ export async function run(
     open: () => {
       opened ??= deps.databases(env);
       return opened;
+    },
+    openApp: () => {
+      openedApp ??= deps.appDatabase(env);
+      return openedApp;
     },
     onStop: (code, cleanup) => {
       stoppedWith = code;
@@ -206,6 +218,7 @@ export async function run(
     // the stop reads the pointer through the app database
     await stopped;
     opened?.app.close();
+    openedApp?.close();
   }
 }
 
@@ -262,9 +275,13 @@ async function runBuild(values: Values, s: Session): Promise<void> {
   );
 }
 
-/** Prints `checkSchedule`'s summary for the served pointer, and appends its output lines to `--output` when given. */
+/**
+ * Prints `checkSchedule`'s summary for the served pointer, and appends its
+ * output lines to `--output` when given. Opens the app database alone: a
+ * pointer read needs no Platform API settings.
+ */
 async function runCheck(values: Values, s: Session): Promise<void> {
-  const pointer = await readServedDatabase(s.open().app);
+  const pointer = await readServedDatabase(s.openApp());
   const check = checkSchedule(
     pointer,
     s.deps.now?.() ?? new Date(),
@@ -474,22 +491,32 @@ export function openDatabases(
   env: Env,
   local: { appDb: string; dataDir: string },
 ): Databases {
-  const named = {
-    ...env,
-    TURSO_APP_DB_URL: env.TURSO_APP_DB_URL || local.appDb,
-  };
+  const named = withAppDb(env, local.appDb);
   // the host first: a Turso Cloud app database missing a Platform setting fails before a client opens
   const host = databaseHostFor(named, local.dataDir);
   return { app: appDbClient(named), host };
 }
 
+/**
+ * The app database `env.TURSO_APP_DB_URL` names, `appDb` when it is unset,
+ * without the host of its data databases.
+ */
+export function openAppDatabase(env: Env, appDb: string): Client {
+  return appDbClient(withAppDb(env, appDb));
+}
+
+function withAppDb(
+  env: Env,
+  appDb: string,
+): Env & { TURSO_APP_DB_URL: string } {
+  return { ...env, TURSO_APP_DB_URL: env.TURSO_APP_DB_URL || appDb };
+}
+
 if (import.meta.main) {
+  const appDb = pathToFileURL(repoPath(".turso/app.db")).href;
   void run(process.argv.slice(2), process.env, {
-    databases: (env) =>
-      openDatabases(env, {
-        appDb: pathToFileURL(repoPath(".turso/app.db")).href,
-        dataDir: LOCAL_DATA_DIR,
-      }),
+    databases: (env) => openDatabases(env, { appDb, dataDir: LOCAL_DATA_DIR }),
+    appDatabase: (env) => openAppDatabase(env, appDb),
     sources: (batches) =>
       irsSources({
         workDir: repoPath("data/efile"),

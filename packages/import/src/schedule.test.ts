@@ -5,8 +5,7 @@ import { join } from "node:path";
 import { NEVER_BUILT, type ServedPointer } from "@nonprofits/db";
 import { appDbFixture } from "@nonprofits/db/fixture";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { type CliDeps, run } from "./cli.ts";
-import { localDatabases } from "./database-host.ts";
+import { type CliDeps, openAppDatabase, openDatabases, run } from "./cli.ts";
 import { ALERT_DAY, checkSchedule, outputLines } from "./schedule.ts";
 import { FIXTURE_COUNTS } from "./test-support.ts";
 
@@ -190,9 +189,11 @@ describe("the check command, over a local app database", () => {
   });
 
   /**
-   * Runs `check` at `at` over a pointer set to `served`; resolves the exit
-   * code, stdout, stderr and the output file. `before` is what the file
-   * already holds, and `output: false` leaves `--output` off.
+   * Runs `check` at `at` over a pointer set to `served`, with `env` as the
+   * process env; resolves the exit code, stdout, stderr, the output file and
+   * the env each app database open was given. `before` is what the file
+   * already holds, and `output: false` leaves `--output` off. Opening the
+   * databases with their host fails the run.
    */
   async function check(
     served: ServedPointer | null,
@@ -201,7 +202,13 @@ describe("the check command, over a local app database", () => {
       args = [],
       before = null,
       output: withOutput = true,
-    }: { args?: string[]; before?: string | null; output?: boolean } = {},
+      env = {},
+    }: {
+      args?: string[];
+      before?: string | null;
+      output?: boolean;
+      env?: Record<string, string>;
+    } = {},
   ) {
     const app = await appDbFixture();
     const dir = await mkdtemp(join(tmpdir(), "schedule-"));
@@ -225,8 +232,15 @@ describe("the check command, over a local app database", () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     const err = vi.spyOn(console, "error").mockImplementation(() => {});
     const argv = ["check", ...args, ...(withOutput ? ["--output", out] : [])];
-    const code = await run(argv, {}, {
-      databases: () => ({ app: app.client, host: localDatabases(dir) }),
+    const opened: unknown[] = [];
+    const code = await run(argv, env, {
+      databases: () => {
+        throw new Error("opened the data databases' host");
+      },
+      appDatabase: (given) => {
+        opened.push(given);
+        return app.client;
+      },
       sources: () => {
         throw new Error("not reached");
       },
@@ -244,8 +258,36 @@ describe("the check command, over a local app database", () => {
       errors: err.mock.calls.map((c) => c.join(" ")),
       written: existsSync(out),
       output: await readFile(out, "utf8").catch(() => ""),
+      opened,
     };
   }
+
+  const CLOUD_APP_DB = "libsql://nonprofits-app-acme.aws-us-east-1.turso.io";
+
+  test("reads a Turso Cloud app database without the Platform API settings", async () => {
+    const env = {
+      TURSO_APP_DB_URL: CLOUD_APP_DB,
+      TURSO_APP_DB_TOKEN: "test-only-app-db-token-0123456789abcdef",
+    };
+    const r = await check(NOV, "2026-11-04T06:17:00Z", { env });
+
+    expect(r.code).toBe(0);
+    expect(r.printed).toStrictEqual(["already imported 20260907T071000Z"]);
+    expect(r.opened).toStrictEqual([env]);
+  });
+
+  test("its open of a Turso Cloud app database needs no Platform settings", () => {
+    // both throw before a client exists, so neither reaches the network
+    const env = { TURSO_APP_DB_URL: CLOUD_APP_DB };
+    const local = { appDb: "file:unused.db", dataDir: "unused" };
+
+    expect(() => openAppDatabase(env, local.appDb)).toThrow(
+      /^TURSO_APP_DB_TOKEN is not set$/,
+    );
+    expect(() => openDatabases(env, local)).toThrow(
+      /^TURSO_PLATFORM_TOKEN, TURSO_ORG, TURSO_GROUP not set/,
+    );
+  });
 
   test("skips the import and says which build is already live", async () => {
     const r = await check(NOV, "2026-11-04T06:17:00Z");

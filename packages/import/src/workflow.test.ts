@@ -274,13 +274,17 @@ describe("import.yml's already-imported check", () => {
   });
 
   test("hands the CLI the secrets the check step requires, and the CLI takes its flags", async () => {
-    expect(secretsIn(SCHEDULE_CHECK)).toStrictEqual(
-      Object.keys(TURSO_SECRETS).sort(),
-    );
+    expect(secretsIn(SCHEDULE_CHECK)).toStrictEqual([
+      "TURSO_APP_DB_TOKEN",
+      "TURSO_APP_DB_URL",
+    ]);
     const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
     const code = await run(["check", "--output", "/dev/null", "--force"], {}, {
       databases: () => {
-        throw new Error("reached the databases");
+        throw new Error("not reached");
+      },
+      appDatabase: () => {
+        throw new Error("reached the app database");
       },
       sources: () => {
         throw new Error("not reached");
@@ -291,8 +295,10 @@ describe("import.yml's already-imported check", () => {
       onSignal: () => {},
       exit: () => {},
     } satisfies CliDeps);
+    const printed = stderr.mock.calls.map((args) => args.join(" "));
     stderr.mockRestore();
     expect(code).toBe(1);
+    expect(printed).toStrictEqual(["reached the app database"]);
   });
 });
 
@@ -327,6 +333,9 @@ describe("import.yml's import step", () => {
       const code = await run(argv, {}, {
         databases: () => {
           throw new Error("reached the databases");
+        },
+        appDatabase: () => {
+          throw new Error("not reached");
         },
         sources: () => {
           throw new Error("not reached");

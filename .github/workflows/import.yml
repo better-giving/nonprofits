@@ -67,9 +67,6 @@ jobs:
         env:
           TURSO_APP_DB_URL: ${{ secrets.TURSO_APP_DB_URL }}
           TURSO_APP_DB_TOKEN: ${{ secrets.TURSO_APP_DB_TOKEN }}
-          TURSO_PLATFORM_TOKEN: ${{ secrets.TURSO_PLATFORM_TOKEN }}
-          TURSO_ORG: ${{ secrets.TURSO_ORG }}
-          TURSO_GROUP: ${{ secrets.TURSO_GROUP }}
           FORCE: ${{ inputs.force }}
           FORCE_VERIFY_FAILURE: ${{ inputs.force_verify_failure }}
         # checkSchedule in packages/import/src/schedule.ts decides; its summary line goes to the job summary
