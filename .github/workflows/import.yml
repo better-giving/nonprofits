@@ -3,10 +3,16 @@ on:
   schedule:
     # the 3rd, after the IRS's month-end revocation list and mid-month BMF, Pub 78 and e-file index refreshes
     - cron: "17 6 3 * *"
+    # catch-up for a run GitHub delayed or dropped: each skips the import once this month's build is live
+    - cron: "17 6 4-7 * *"
   workflow_dispatch:
     inputs:
       force_verify_failure:
         description: Build the whole file, then fail verify, so nothing is published
+        type: boolean
+        default: false
+      force:
+        description: Import although this month's build is already live
         type: boolean
         default: false
 permissions:
@@ -56,8 +62,52 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Disk space before the import
         run: df -h .
+      - name: Check whether this month is imported
+        id: check
+        env:
+          TURSO_APP_DB_URL: ${{ secrets.TURSO_APP_DB_URL }}
+          TURSO_APP_DB_TOKEN: ${{ secrets.TURSO_APP_DB_TOKEN }}
+          FORCE: ${{ inputs.force }}
+          FORCE_VERIFY_FAILURE: ${{ inputs.force_verify_failure }}
+        # checkSchedule in packages/import/src/schedule.ts decides; its summary line goes to the job summary
+        # a dry run publishes nothing, so it never needs the already-imported skip
+        run: |
+          set -o pipefail
+          args=(check --output "$GITHUB_OUTPUT")
+          if [ "$FORCE" = true ] || [ "$FORCE_VERIFY_FAILURE" = true ]; then
+            args+=(--force)
+          fi
+          node packages/import/src/cli.ts "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Flag a missed month
+        if: steps.check.outputs.alert != ''
+        # the Import's `if` carries an implicit success(), so a failed issues API
+        # call here would skip the import on the days the month is overdue
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          ALERT: ${{ steps.check.outputs.alert }}
+        with:
+          script: |
+            const title = "Monthly IRS import failed";
+            const { owner, repo } = context.repo;
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const body = `${process.env.ALERT} Run: ${runUrl}`;
+            const open = await github.paginate(github.rest.issues.listForRepo, {
+              owner,
+              repo,
+              state: "open",
+              creator: "github-actions[bot]",
+              per_page: 100,
+            });
+            const issue = open.find((i) => i.title === title && !i.pull_request);
+            if (issue) {
+              await github.rest.issues.createComment({ owner, repo, issue_number: issue.number, body });
+            } else {
+              await github.rest.issues.create({ owner, repo, title, body });
+            }
       - name: Import
         id: import
+        if: steps.check.outputs.proceed == 'true'
         # under the job's timeout, so the steps below still run; a step timeout
         # fails the step (outcome failure), it doesn't cancel it
         timeout-minutes: 335

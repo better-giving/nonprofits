@@ -1,3 +1,4 @@
+import { appendFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import type { Client } from "@libsql/client";
@@ -16,6 +17,7 @@ import {
   type PublishReport,
   publishDataFile,
 } from "./publish.ts";
+import { checkSchedule, outputLines } from "./schedule.ts";
 import { irsSources, type SourceConfig } from "./sources.ts";
 import {
   finish,
@@ -51,6 +53,11 @@ const USAGE = `usage: node src/cli.ts <command>
       data database, switch the served-database pointer to it and delete the
       one served before; --force-verify-failure fails verify after the full
       build, so nothing is published
+  check [--force] [--output <file>]
+      read the served-database pointer and print whether this month is already
+      imported; --output appends proceed= and alert= lines to <file>, in the
+      format GitHub Actions reads from $GITHUB_OUTPUT, alert= naming a missed
+      month from the 5th UTC; --force proceeds although the month is imported
   --summary <file>  append a markdown summary of the run to <file>, failed or stopped too
 The app database is TURSO_APP_DB_URL (.turso/app.db when unset). A Turso Cloud
 one publishes through Turso's Platform API, with TURSO_APP_DB_TOKEN,
@@ -60,6 +67,7 @@ TURSO_PLATFORM_TOKEN, TURSO_ORG and TURSO_GROUP; any other to files in .turso/da
 const FLAGS = {
   build: ["out", "efile-batch", "force-verify-failure"],
   refresh: ["force-verify-failure", "summary"],
+  check: ["force", "output"],
 } as const;
 
 function repoPath(path: string): string {
@@ -76,6 +84,8 @@ function args(argv: readonly string[]) {
         out: { type: "string" },
         "efile-batch": { type: "string", multiple: true },
         summary: { type: "string" },
+        force: { type: "boolean" },
+        output: { type: "string" },
         "force-verify-failure": { type: "boolean" },
       },
       allowPositionals: true,
@@ -110,6 +120,11 @@ interface Terminal {
 export interface CliDeps {
   /** The databases `env` names, opened once per run, which closes `app`. */
   databases(env: Env): Databases;
+  /**
+   * The app database `env` names alone, with no host: what `check` opens,
+   * once per run, which closes it.
+   */
+  appDatabase(env: Env): Client;
   /** Every IRS source; e-file from `batches` alone when given. */
   sources(batches: readonly string[] | undefined): SourceConfig;
   /** The fewest of each count a build may hold. */
@@ -120,6 +135,8 @@ export interface CliDeps {
   dataFile: string;
   /** As `PublishOptions.sleep`: a timer unless given. */
   sleep?: PublishOptions["sleep"];
+  /** The clock `check` reads; the real one unless given. */
+  now?: () => Date;
   /** Has `stop` called on every SIGINT (code 130) and SIGTERM (143). */
   onSignal(stop: (signal: NodeJS.Signals, code: number) => void): void;
   /** Ends the process, once a stop is done. */
@@ -134,6 +151,8 @@ interface Session {
   secrets: () => Secrets;
   /** The run's databases, opened on the first call. */
   open: () => Databases;
+  /** The run's app database alone, opened on the first call. */
+  openApp: () => Client;
   /** Called once a signal starts stopping the run, with the stop's exit code and its cleanup. */
   onStop: (code: number, stopped: Promise<void>) => void;
 }
@@ -153,6 +172,7 @@ export async function run(
   let stoppedWith: number | null = null;
   let stopped: Promise<void> | null = null;
   let opened: Databases | undefined;
+  let openedApp: Client | undefined;
   const secrets = () => [
     env.TURSO_APP_DB_TOKEN,
     env.TURSO_PLATFORM_TOKEN,
@@ -171,6 +191,10 @@ export async function run(
     open: () => {
       opened ??= deps.databases(env);
       return opened;
+    },
+    openApp: () => {
+      openedApp ??= deps.appDatabase(env);
+      return openedApp;
     },
     onStop: (code, cleanup) => {
       stoppedWith = code;
@@ -194,13 +218,17 @@ export async function run(
     // the stop reads the pointer through the app database
     await stopped;
     opened?.app.close();
+    openedApp?.close();
   }
 }
 
 async function command(argv: readonly string[], s: Session): Promise<number> {
   const { values, positionals } = args(argv);
   const [name, ...rest] = positionals;
-  if ((name !== "build" && name !== "refresh") || rest.length > 0) {
+  if (
+    (name !== "build" && name !== "refresh" && name !== "check") ||
+    rest.length > 0
+  ) {
     throw new UsageError();
   }
   if (name === "refresh" && values["efile-batch"] !== undefined) {
@@ -217,6 +245,8 @@ async function command(argv: readonly string[], s: Session): Promise<number> {
   }
   if (name === "build") {
     await runBuild(values, s);
+  } else if (name === "check") {
+    await runCheck(values, s);
   } else {
     await runRefresh(values, s);
   }
@@ -243,6 +273,24 @@ async function runBuild(values: Values, s: Session): Promise<void> {
   console.log(
     `build: ${report.out}, build ${report.buildId} (${listed(report.counts)})`,
   );
+}
+
+/**
+ * Prints `checkSchedule`'s summary for the served pointer, and appends its
+ * output lines to `--output` when given. Opens the app database alone: a
+ * pointer read needs no Platform API settings.
+ */
+async function runCheck(values: Values, s: Session): Promise<void> {
+  const pointer = await readServedDatabase(s.openApp());
+  const check = checkSchedule(
+    pointer,
+    s.deps.now?.() ?? new Date(),
+    values.force === true,
+  );
+  if (values.output !== undefined) {
+    appendFileSync(values.output, outputLines(check));
+  }
+  console.log(check.summary);
 }
 
 /** Builds, verifies against what is served, and publishes; writes the run's summary, failed or stopped too. */
@@ -443,22 +491,32 @@ export function openDatabases(
   env: Env,
   local: { appDb: string; dataDir: string },
 ): Databases {
-  const named = {
-    ...env,
-    TURSO_APP_DB_URL: env.TURSO_APP_DB_URL || local.appDb,
-  };
+  const named = withAppDb(env, local.appDb);
   // the host first: a Turso Cloud app database missing a Platform setting fails before a client opens
   const host = databaseHostFor(named, local.dataDir);
   return { app: appDbClient(named), host };
 }
 
+/**
+ * The app database `env.TURSO_APP_DB_URL` names, `appDb` when it is unset,
+ * without the host of its data databases.
+ */
+export function openAppDatabase(env: Env, appDb: string): Client {
+  return appDbClient(withAppDb(env, appDb));
+}
+
+function withAppDb(
+  env: Env,
+  appDb: string,
+): Env & { TURSO_APP_DB_URL: string } {
+  return { ...env, TURSO_APP_DB_URL: env.TURSO_APP_DB_URL || appDb };
+}
+
 if (import.meta.main) {
+  const appDb = pathToFileURL(repoPath(".turso/app.db")).href;
   void run(process.argv.slice(2), process.env, {
-    databases: (env) =>
-      openDatabases(env, {
-        appDb: pathToFileURL(repoPath(".turso/app.db")).href,
-        dataDir: LOCAL_DATA_DIR,
-      }),
+    databases: (env) => openDatabases(env, { appDb, dataDir: LOCAL_DATA_DIR }),
+    appDatabase: (env) => openAppDatabase(env, appDb),
     sources: (batches) =>
       irsSources({
         workDir: repoPath("data/efile"),

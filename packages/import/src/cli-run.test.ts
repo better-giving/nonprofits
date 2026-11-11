@@ -18,7 +18,7 @@ import {
   vi,
 } from "vitest";
 import { type BuildReport, buildDataFile } from "./build.ts";
-import { type CliDeps, openDatabases, run } from "./cli.ts";
+import { type CliDeps, openAppDatabase, openDatabases, run } from "./cli.ts";
 import { localDatabases } from "./database-host.ts";
 import { type DatabaseHost, publishDataFile } from "./publish.ts";
 import {
@@ -94,6 +94,7 @@ async function harness({
       const opened = openDatabases(env, { appDb: app.url, dataDir: databases });
       return { app: wrapApp(opened.app), host: wrap(opened.host) };
     },
+    appDatabase: (env) => wrapApp(openAppDatabase(env, app.url)),
     sources: (batches) => {
       const sources = fixtureSources(base, join(dir, "efile"));
       return batches === undefined

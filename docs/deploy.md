@@ -202,7 +202,7 @@ Raising a ceiling, or moving to Turso's Developer plan ($4.99 a month, with more
 
 ## Keeping it running
 
-- The import runs at 06:17 UTC on the 3rd of each month. [Monthly import](../CONTRIBUTING.md#monthly-import) in CONTRIBUTING.md covers its one switch (a dry run) and what a failed run leaves.
+- The import runs at 06:17 UTC on the 3rd of each month, with catch-ups on the 4th to the 7th that skip once the month's build is live. [Monthly import](../CONTRIBUTING.md#monthly-import) in CONTRIBUTING.md covers its two switches (force, and a dry run) and the issue a missed or failed month leaves.
 - The cron runs at 03:17 UTC each day: it deletes usage rows more than 7 days old, then runs the [freshness guard](../packages/api/src/freshness.ts).
 - To change a secret, edit it under **Settings > Environment Variables**, then redeploy. A new `TURSO_APP_DB_TOKEN` goes in the GitHub secret too.
 - When you sync your fork with upstream, keep your workflows' `runs-on` through any conflict there.

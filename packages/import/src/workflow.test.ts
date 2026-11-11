@@ -21,6 +21,7 @@ import {
   vi,
 } from "vitest";
 import { type CliDeps, DATA_FILE_NAME, run } from "./cli.ts";
+import { outputLines } from "./schedule.ts";
 import { type RunRecord, renderSummary, runRecord } from "./summary.ts";
 import { FIXTURE_COUNTS } from "./test-support.ts";
 
@@ -55,6 +56,8 @@ function block(text: string, key: string): string {
 }
 
 const CHECK = step("Check the Turso secrets are set");
+const SCHEDULE_CHECK = step("Check whether this month is imported");
+const FLAG_MISS = step("Flag a missed month");
 const IMPORT = step("Import");
 const RUN_SUMMARY = step("Run summary");
 const ISSUE = step("Open or comment on the failure issue");
@@ -84,10 +87,14 @@ afterAll(async () => {
   if (work) await rm(work, { recursive: true, force: true });
 });
 
+/** A step with no `shell:` runs under `bash -e {0}`, without pipefail; no step in import.yml sets one. */
+const DEFAULT_SHELL = ["-e"];
+
 /**
- * `script` run as GitHub runs a step (`bash -eo pipefail`) in a directory of
- * its own, which is also `RUNNER_TEMP`, with `env`, and `node` a stub that
- * records its args; resolves with its exit code, its stdout and node's calls.
+ * `script` run as GitHub runs a step with no `shell:` (`bash -e`) in a
+ * directory of its own, which is also `RUNNER_TEMP`, with `env`, and `node` a
+ * stub that records its args; resolves with its exit code, its stdout and
+ * node's calls.
  */
 async function bashStep(
   script: string,
@@ -106,7 +113,7 @@ async function bashStep(
     (resolve) => {
       execFile(
         "bash",
-        ["-eo", "pipefail", "-c", script],
+        [...DEFAULT_SHELL, "-c", script],
         {
           cwd: dir,
           env: {
@@ -191,6 +198,139 @@ describe("import.yml's secrets check", () => {
   });
 });
 
+describe("import.yml's schedule", () => {
+  test("keeps the 3rd and adds a daily catch-up from the 4th to the 7th at 06:17 UTC", () => {
+    expect(
+      [...WORKFLOW.matchAll(/- cron: "([^"]+)"/g)].map((m) => m[1]),
+    ).toStrictEqual(["17 6 3 * *", "17 6 4-7 * *"]);
+  });
+
+  test("a dispatch takes force and force_verify_failure, both off by default", () => {
+    for (const input of ["force", "force_verify_failure"]) {
+      expect(WORKFLOW).toMatch(
+        new RegExp(`^ {6}${input}:\\n(?: {8}.*\\n)*? {8}default: false`, "m"),
+      );
+    }
+  });
+});
+
+describe("import.yml's already-imported check", () => {
+  test("is the step with id check, and every output the workflow reads is one outputLines writes", () => {
+    expect(SCHEDULE_CHECK).toMatch(/^ {8}id: check$/m);
+    const written = outputLines({ proceed: true, alert: "a", summary: "s" })
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => line.split("=")[0]);
+    const read = new Set(
+      [...WORKFLOW.matchAll(/steps\.check\.outputs\.(\w+)/g)].map((m) => m[1]),
+    );
+
+    expect([...read].sort()).toStrictEqual(["alert", "proceed"]);
+    for (const key of read) expect(written).toContain(key);
+  });
+
+  test.each([
+    ["a scheduled run", "", "", ""],
+    ["a dispatch with force", "true", "false", " --force"],
+    ["a dispatch with force_verify_failure", "false", "true", " --force"],
+    ["a dispatch with both", "true", "true", " --force"],
+    ["a dispatch with neither", "false", "false", ""],
+  ])(
+    "%s runs the CLI's check, writing to GITHUB_OUTPUT",
+    async (_, force, forceVerifyFailure, flag) => {
+      const step = await bashStep(block(SCHEDULE_CHECK, "run"), {
+        FORCE: force,
+        FORCE_VERIFY_FAILURE: forceVerifyFailure,
+        GITHUB_OUTPUT: "/dev/null",
+        GITHUB_STEP_SUMMARY: "/dev/null",
+      });
+
+      expect(step.code).toBe(0);
+      expect(step.calls).toStrictEqual([
+        `packages/import/src/cli.ts check --output /dev/null${flag}`,
+      ]);
+    },
+  );
+
+  test("fails when the CLI's check fails, though its output goes through tee", async () => {
+    const step = await bashStep(
+      block(SCHEDULE_CHECK, "run"),
+      {
+        FORCE: "",
+        GITHUB_OUTPUT: "/dev/null",
+        GITHUB_STEP_SUMMARY: "/dev/null",
+      },
+      async (dir) => {
+        await writeFile(join(dir, "bin", "node"), "#!/bin/sh\nexit 3\n");
+      },
+    );
+
+    expect(step.code).toBe(3);
+  });
+
+  test("appends the CLI's summary line to the job summary", async () => {
+    const jobSummary = join(work, "job-summary-check.md");
+    const step = await bashStep(
+      block(SCHEDULE_CHECK, "run"),
+      {
+        FORCE: "",
+        GITHUB_OUTPUT: "/dev/null",
+        GITHUB_STEP_SUMMARY: jobSummary,
+      },
+      async (dir) => {
+        await writeFile(
+          join(dir, "bin", "node"),
+          "#!/bin/sh\necho 'already imported b1'\n",
+        );
+      },
+    );
+
+    expect(step.code).toBe(0);
+    expect(await readFile(jobSummary, "utf8")).toBe("already imported b1\n");
+  });
+
+  test("runs before the import, which waits for its answer, and the alert only on a message", () => {
+    expect(WORKFLOW.indexOf(SCHEDULE_CHECK)).toBeLessThan(
+      WORKFLOW.indexOf(IMPORT),
+    );
+    expect(IMPORT).toContain("if: steps.check.outputs.proceed == 'true'");
+    expect(FLAG_MISS).toContain("if: steps.check.outputs.alert != ''");
+    expect(WORKFLOW.indexOf(FLAG_MISS)).toBeLessThan(WORKFLOW.indexOf(IMPORT));
+  });
+
+  test("the alert can't block the import", () => {
+    expect(FLAG_MISS).toMatch(/^ {8}continue-on-error: true$/m);
+  });
+
+  test("hands the CLI the secrets the check step requires, and the CLI takes its flags", async () => {
+    expect(secretsIn(SCHEDULE_CHECK)).toStrictEqual([
+      "TURSO_APP_DB_TOKEN",
+      "TURSO_APP_DB_URL",
+    ]);
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    const code = await run(["check", "--output", "/dev/null", "--force"], {}, {
+      databases: () => {
+        throw new Error("not reached");
+      },
+      appDatabase: () => {
+        throw new Error("reached the app database");
+      },
+      sources: () => {
+        throw new Error("not reached");
+      },
+      floors: FIXTURE_COUNTS,
+      loadDir: "load",
+      dataFile: "data",
+      onSignal: () => {},
+      exit: () => {},
+    } satisfies CliDeps);
+    const printed = stderr.mock.calls.map((args) => args.join(" "));
+    stderr.mockRestore();
+    expect(code).toBe(1);
+    expect(printed).toStrictEqual(["reached the app database"]);
+  });
+});
+
 describe("import.yml's import step", () => {
   test.each([
     ["a scheduled run", "", []],
@@ -222,6 +362,9 @@ describe("import.yml's import step", () => {
       const code = await run(argv, {}, {
         databases: () => {
           throw new Error("reached the databases");
+        },
+        appDatabase: () => {
+          throw new Error("not reached");
         },
         sources: () => {
           throw new Error("not reached");
@@ -270,6 +413,17 @@ describe("import.yml's run summary step", () => {
     expect(step.code).toBe(0);
     expect(step.stdout).not.toContain("::warning");
   });
+
+  test("succeeds and adds nothing when the import was skipped and wrote no summary", async () => {
+    const jobSummary = join(work, "job-summary-skipped.md");
+    const step = await bashStep(block(RUN_SUMMARY, "run"), {
+      GITHUB_STEP_SUMMARY: jobSummary,
+    });
+
+    expect(step.code).toBe(0);
+    expect(existsSync(jobSummary)).toBe(false);
+    expect(step.stdout).not.toContain("::warning");
+  });
 });
 
 describe("import.yml's cleanup step", () => {
@@ -301,19 +455,30 @@ describe("import.yml's cleanup step", () => {
 
 /** What the script sends GitHub to open an issue or add a comment. */
 interface IssueCall {
+  title?: string;
   body: string;
   issue_number?: number;
 }
 
-/** The failure issue step's script run over `summary` (none when null), the issues listed open being `open`; resolves with what it created or commented. */
-async function issueStep(summary: string | null, open: unknown[] = []) {
-  const dir = join(work, `issue-${++n}`);
-  await mkdir(dir, { recursive: true });
-  if (summary !== null) {
-    await writeFile(join(dir, "import-summary.md"), summary);
-  }
+type Paginate = Mock<
+  (method: unknown, options: Record<string, unknown>) => Promise<unknown[]>
+>;
+
+/** What the fake `github.rest.issues.listForRepo` is, so a test can tell `paginate` was handed it. */
+const listForRepo = {};
+
+/** A github-script `script` run with `RUNNER_TEMP` at `dir` and `env` set, against a fake `github` listing the issues `open`; resolves with what it created or commented. */
+async function githubScript(
+  source: string,
+  dir: string,
+  open: unknown[],
+  env: Record<string, string>,
+) {
   const create = vi.fn(async (_: IssueCall) => ({}));
   const createComment = vi.fn(async (_: IssueCall) => ({}));
+  const paginate = vi.fn(
+    async (_method: unknown, _options: Record<string, unknown>) => open,
+  );
   const AsyncFunction = Object.getPrototypeOf(async () => {})
     .constructor as new (
     ...args: string[]
@@ -323,13 +488,13 @@ async function issueStep(summary: string | null, open: unknown[] = []) {
     "github",
     "context",
     "process",
-    block(ISSUE, "script"),
+    source,
   );
   await script(
     createRequire(import.meta.url),
     {
-      paginate: async () => open,
-      rest: { issues: { listForRepo: {}, create, createComment } },
+      paginate,
+      rest: { issues: { listForRepo, create, createComment } },
     },
     {
       repo: { owner: "o", repo: "r" },
@@ -337,9 +502,38 @@ async function issueStep(summary: string | null, open: unknown[] = []) {
       runId: 7,
       eventName: "schedule",
     },
-    { env: { RUNNER_TEMP: dir } },
+    { env: { RUNNER_TEMP: dir, ...env } },
   );
-  return { create, createComment };
+  return { create, createComment, paginate };
+}
+
+/** What the scripts must list: the open issues the bot itself opened, in this repo. */
+function expectListsOpenBotIssues(paginate: Paginate) {
+  expect(paginate).toHaveBeenCalledOnce();
+  expect(paginate.mock.calls[0]?.[0]).toBe(listForRepo);
+  expect(paginate.mock.calls[0]?.[1]).toMatchObject({
+    owner: "o",
+    repo: "r",
+    state: "open",
+    creator: "github-actions[bot]",
+  });
+}
+
+/** The failure issue step's script run over `summary` (none when null), the issues listed open being `open`. */
+async function issueStep(summary: string | null, open: unknown[] = []) {
+  const dir = join(work, `issue-${++n}`);
+  await mkdir(dir, { recursive: true });
+  if (summary !== null) {
+    await writeFile(join(dir, "import-summary.md"), summary);
+  }
+  return githubScript(block(ISSUE, "script"), dir, open, {});
+}
+
+/** The missed-month step's script run with `alert`, the issues listed open being `open`. */
+async function flagMissStep(alert: string, open: unknown[] = []) {
+  const dir = join(work, `flag-${++n}`);
+  await mkdir(dir, { recursive: true });
+  return githubScript(block(FLAG_MISS, "script"), dir, open, { ALERT: alert });
 }
 
 const bodyOf = (call: Mock<(arg: IssueCall) => Promise<object>>) =>
@@ -388,6 +582,12 @@ describe("import.yml's failure issue step, run over what the CLI writes", () => 
     expect(body).not.toContain("uploading failed");
   });
 
+  test("looks for its issue among the open ones the bot opened", async () => {
+    const { paginate } = await issueStep(null);
+
+    expectListsOpenBotIssues(paginate);
+  });
+
   test("says no summary was written when there is none, and comments on the open issue instead of opening another", async () => {
     const { create, createComment } = await issueStep(null, [
       { number: 12, title: "Monthly IRS import failed" },
@@ -401,5 +601,57 @@ describe("import.yml's failure issue step, run over what the CLI writes", () => 
     expect(createComment.mock.calls[0]?.[0]).toMatchObject({
       issue_number: 12,
     });
+  });
+});
+
+describe("import.yml's missed-month alert step, run over a fake GitHub", () => {
+  const ALERT = "No build was switched in 2026-11 by the 5th (UTC).";
+  const TITLE = "Monthly IRS import failed";
+
+  test("shares the failure step's issue title, so both land in one thread", () => {
+    const titleIn = (text: string) =>
+      /const title = "([^"]+)";/.exec(text)?.[1];
+
+    expect(titleIn(block(FLAG_MISS, "script"))).toBe(TITLE);
+    expect(titleIn(block(ISSUE, "script"))).toBe(TITLE);
+  });
+
+  test("looks for its issue among the open ones the bot opened", async () => {
+    const { paginate } = await flagMissStep(ALERT);
+
+    expectListsOpenBotIssues(paginate);
+  });
+
+  test("opens an issue carrying the alert and the run's url when none is open", async () => {
+    const { create, createComment } = await flagMissStep(ALERT);
+
+    expect(createComment).not.toHaveBeenCalled();
+    expect(create).toHaveBeenCalledOnce();
+    expect(create.mock.calls[0]?.[0]).toMatchObject({
+      title: TITLE,
+      body: `${ALERT} Run: https://github.com/o/r/actions/runs/7`,
+    });
+  });
+
+  test("comments on the open issue with that title instead of opening another", async () => {
+    const { create, createComment } = await flagMissStep(ALERT, [
+      { number: 5, title: "Something else" },
+      { number: 12, title: TITLE },
+    ]);
+
+    expect(create).not.toHaveBeenCalled();
+    expect(createComment.mock.calls[0]?.[0]).toMatchObject({
+      issue_number: 12,
+      body: `${ALERT} Run: https://github.com/o/r/actions/runs/7`,
+    });
+  });
+
+  test("skips a pull request with that title and opens an issue", async () => {
+    const { create, createComment } = await flagMissStep(ALERT, [
+      { number: 9, title: TITLE, pull_request: { url: "x" } },
+    ]);
+
+    expect(createComment).not.toHaveBeenCalled();
+    expect(create).toHaveBeenCalledOnce();
   });
 });
