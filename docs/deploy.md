@@ -131,6 +131,23 @@ Optional, each leaving the default when unset:
 - **`SERVICE_KEYLESS_DAILY_LIMIT`** and **`SERVICE_KEY_DAILY_LIMIT`**: the service-wide daily ceilings, below.
 - **`RATE_LIMIT_SECRET`**: salts the keys the api sends to the Firewall's rate-limit rules.
 
+### Preview deployments (optional)
+
+Skip this and previews keep answering 503 `server_misconfigured`. To get previews that serve real responses without touching production, give them their own app database and their own Preview-scoped variables. Never reuse a Production value.
+
+1. **App database.** In the same group, `turso db create nonprofits-app-preview --group nonprofits`, then run step 3's migrate command against it. Mint a read-write token for that database only.
+2. **Pointer.** The migrate leaves the preview app database's `served_database` row empty. Point it at the data database production serves now: read `database_name`, `database_url` and `build_id` from the production app database's `served_database` row, then run `UPDATE served_database SET database_name = ?, database_url = ?, build_id = ?, switched_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = 1` on the preview's with them.
+3. **Variables.** On the Vercel project, add step 8's variables with only **Preview** ticked: the preview app database's URL and token, a read-only data token, and newly generated values for `IP_HASH_SECRET`, `BETTER_AUTH_SECRET`, `ADMIN_TOKEN` and `CRON_SECRET`. Leave `GITHUB_DISPATCH_TOKEN` unset, so a preview's cron can't start the import.
+4. **Check.** A preview answers a keyless search with 200.
+
+**Every month, by hand.** The import deletes last month's data database once the new one serves, so the preview's pointer then names a database that is gone, and its data token stops working. Previews answer 503 `data_unavailable` until both are fixed. After each import:
+
+1. Repeat the pointer step with the production pointer's new values.
+2. Replace the Preview-scoped data token on the Vercel project with one that reads the new database, and redeploy the preview.
+3. Repeat the check.
+
+The import doesn't do this: automating it would give the import workflow write access to a second app database and to Vercel's variables. Owner: the Turso platform seat does the first part and the Vercel platform seat the second.
+
 ## 9. Add the per-minute limits
 
 The api counts its per-minute limits in four Vercel Firewall rules, so a refused request never reaches Turso. Until all four are published, every metered request answers 503 `auth_unavailable`: the api refuses rather than serve a request it can't count.
