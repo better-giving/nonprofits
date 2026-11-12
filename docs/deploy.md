@@ -145,7 +145,7 @@ Skip this and previews keep answering 503 `server_misconfigured` on every route.
    pnpm --filter @nonprofits/db migrate
    ```
 
-   It prints `applied <file>` for each migration. `app database is current` means the shell still pointed at a database that was already migrated, most likely production's.
+   If it prints `app database is current` instead of `applied <file>` lines, the shell still pointed at a migrated database, most likely production's.
 2. **Pointer.** The migrate leaves the preview's pointer unset. Copy production's into it, `build_id` and `switched_at` exactly as they print:
 
    ```sh
@@ -153,7 +153,7 @@ Skip this and previews keep answering 503 `server_misconfigured` on every route.
    turso db shell nonprofits-app-preview "UPDATE served_database SET database_name = '<name>', database_url = '<url>', build_id = '<build_id>', switched_at = '<switched_at>' WHERE id = 1"
    ```
 
-3. **Variables.** Add step 8's variables with only **Preview** ticked: `TURSO_APP_DB_URL` and `TURSO_APP_DB_TOKEN` from step 1, a second group read-only token from `turso group tokens create nonprofits --read-only --expiration never` as `TURSO_DATA_DB_TOKEN`, and newly generated values for `IP_HASH_SECRET`, `BETTER_AUTH_SECRET`, `ADMIN_TOKEN` and `CRON_SECRET`. Set `SERVICE_KEYLESS_DAILY_LIMIT` and `SERVICE_KEY_DAILY_LIMIT` low, such as `100`: a preview's daily ceilings are counted apart from production's but read from the same Turso plan, and once the plan's monthly reads run out, production answers 503 too. Leave `GITHUB_DISPATCH_TOKEN` unset, so a request to a preview's `/cron/daily` can't start the import. The group token also reads the production app database, which holds the key store; a preview runs a branch's code with that access.
+3. **Variables.** Add step 8's variables with only **Preview** ticked: `TURSO_APP_DB_URL` and `TURSO_APP_DB_TOKEN` from step 1, a second group read-only token from `turso group tokens create nonprofits --read-only --expiration never` as `TURSO_DATA_DB_TOKEN`, and newly generated values for `IP_HASH_SECRET`, `BETTER_AUTH_SECRET`, `ADMIN_TOKEN` and `CRON_SECRET`. Set `SERVICE_KEYLESS_DAILY_LIMIT` and `SERVICE_KEY_DAILY_LIMIT` low, such as `100`. A preview counts its own daily ceilings but reads from the same Turso plan, and once the plan's monthly reads run out, production answers 503 too. Leave `GITHUB_DISPATCH_TOKEN` unset, so a request to a preview's `/cron/daily` can't start the import. The group token also reads the production app database, which holds the key store, and a preview runs a branch's code with that access.
 4. **Protection bypass.** Keep Deployment Protection on for previews. Under **Settings > Deployment Protection**, create a Protection Bypass for Automation secret, and under **Settings > Environment Variables** keep **Automatically expose System Environment Variables** ticked. Without both, the Firewall's rate-limit check fails on a preview and every metered request answers 503 `auth_unavailable`. Redeploy the preview after changing either.
 5. **Check.** Step 12's keyless request, with the bypass header, answers with `AMERICAN NATIONAL RED CROSS`:
 
@@ -161,9 +161,7 @@ Skip this and previews keep answering 503 `server_misconfigured` on every route.
    curl -H "x-vercel-protection-bypass: <bypass-secret>" https://<preview-url>/v1/orgs/530196605
    ```
 
-**Every month, by hand.** A minute after the new data database serves, the import deletes last month's, so the preview's pointer names a database that is gone and previews answer 503 `data_unavailable`. After each import, repeat the pointer step with production's new values, then the check. Previews read the new pointer within 30 seconds, with no redeploy and no new token: a group token reads every month's database.
-
-The import doesn't repoint the preview: that would give the import workflow write access to a second app database.
+**Every month, by hand.** A minute after the new data database serves, the import deletes last month's, so the preview's pointer names a database that is gone and previews answer 503 `data_unavailable`. After each import, repeat the pointer step with production's new values, then the check. Previews read the new pointer within 30 seconds; the group token already reads every month's database, so nothing needs redeploying. The import leaves the preview alone on purpose: repointing it would give the import workflow write access to a second app database.
 
 Vercel runs crons only on production, so a preview's usage rows are never pruned. To prune them, request the preview's `/cron/daily` with `Authorization: Bearer <preview-CRON_SECRET>` and the bypass header.
 
