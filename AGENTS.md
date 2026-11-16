@@ -2,8 +2,6 @@
 
 Claude Code loads this file from `.claude/CLAUDE.md`; Cursor loads it from `.cursor/rules/project.mdc`.
 
-**Doop workspace:** Kh7Aj6wrqb
-
 ## Stack
 
 - **Node 24**, from `.nvmrc`; CI reads it through `actions/setup-node`'s `node-version-file`. Only `.cursor/environment.json` pins a patch (`NODE_VERSION`), and its `NODE_SHA256` has to change with it: the install checks the tarball against that hash. In cloud agents, nvm's or the image's node can come first on PATH; `.cursor/environment.json` and `.claude/cloud-install.sh` each end `~/.bashrc` and the login file with a line putting the pinned node first, and fail unless new `bash -lc` and `bash -ic` shells resolve it. Run node through those shells or the Bash tool: a bare `bash -c` keeps the PATH it started with.
